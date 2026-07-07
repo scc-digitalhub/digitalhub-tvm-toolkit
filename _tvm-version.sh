@@ -38,13 +38,19 @@ resolve_tvm_version() {
             if [ -n "$remote" ] && [ "$remote" != "$built" ]; then
                 echo ">> nota: latest stabile su GitHub = $remote, uso il build locale $built" >&2
                 if [ -d "$TVM_ROOT/tvm-$remote" ]; then
-                    echo "         (tvm-$remote è clonato ma NON compilato — docker/build-tvm.sh o BUILD_TVM=1)" >&2
+                    echo "         (tvm-$remote è clonato ma NON compilato — compila con ./build-tvm.sh)" >&2
                 else
                     echo "         (builda TVM $remote in $TVM_ROOT/tvm-$remote per aggiornare)" >&2
                 fi
             fi
+        elif [ -n "$remote" ]; then
+            # Fresh clone bootstrap: nothing built locally yet, but the latest
+            # stable release is known — use it so ./build-tvm.sh can clone+build.
+            # Callers that need a built tree still fail via tvm_assert_built.
+            TVM_VERSION="$remote"
+            echo ">> nota: nessun TVM compilato in $TVM_ROOT — uso il latest stabile $remote (compila con ./build-tvm.sh)" >&2
         else
-            echo "ERRORE: nessun TVM COMPILATO in $TVM_ROOT/tvm-X.Y.Z — imposta TVM_VERSION e compila (build-tvm.sh)" >&2
+            echo "ERRORE: nessun TVM compilato in $TVM_ROOT/tvm-X.Y.Z e release remota non determinabile — imposta TVM_VERSION e compila (./build-tvm.sh)" >&2
             return 1
         fi
     fi
@@ -79,6 +85,5 @@ tvm_assert_built() {
     tvm_is_built && return 0
     echo "ERRORE: TVM $TVM_VERSION non compilato ($TVM_BUILD/lib/libtvm_runtime.so manca)." >&2
     echo "        Compilalo con:  $_TVM_DOCKER_DIR/build-tvm.sh" >&2
-    echo "        oppure ri-lancia rebuild-images.sh con BUILD_TVM=1 (lo compila in automatico)." >&2
     return 1
 }

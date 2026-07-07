@@ -6,12 +6,12 @@ the TVM `tvm+build` and `tvm+compile` tasks.
 ```
 tvm-toolkit  =  Apache TVM (python + libs) + LLVM + native g++ + ARM cross-toolchain
                 + onnx + digitalhub SDK
-                 · tvm+build     onnx / pytorch / tvmscript  →  Relax IR   (Model tvm-ir)
+                 · tvm+build     onnx  →  Relax IR   (Model tvm-ir)
                  · tvm+compile   Relax IR  →  model.so        (Model tvm-so)
 ```
 
-One image covers every input format (onnx/pytorch/tvmscript) and every LLVM target
-(x86_64 + cross-compile aarch64/armv7). It packages a **host build of TVM** (the `.so`
+ONNX is the only supported source format. One image covers it for every LLVM target
+(x86_64 + cross-compile aarch64). It packages a **host build of TVM** (the `.so`
 + `python/tvm`) — it does not compile TVM in-image.
 
 > Serving is a separate concern in its own projects: **`digitalhub-tvm-rust`** (rust
@@ -32,10 +32,10 @@ One image covers every input format (onnx/pytorch/tvmscript) and every LLVM targ
 ```bash
 ./build-tvm.sh                 # 1) compile TVM (once). TVM_VERSION=0.25.0 for a specific one
 ./build-image.sh --load        # 2) build tvm-toolkit:<tag> and load it into minikube
-./build-image.sh --push        #    ... or push to $REGISTRY (default 192.168.49.1:5000)
+./build-image.sh --push        #    ... or push: REGISTRY=<host[/org]> prefixes the ref; empty pushes the bare $TAG
 ```
 
-The image tag is `tvm-toolkit:<major.minor>` (e.g. `tvm-toolkit:0.24`), derived from the
+The image tag is `tvm-toolkit:<major.minor>` (e.g. `tvm-toolkit:0.25`), derived from the
 resolved TVM version. `build-image.sh` fails fast if TVM is not compiled yet.
 
 **Version resolution** (`_tvm-version.sh`): explicit `TVM_VERSION` → else the highest
@@ -47,9 +47,9 @@ locally-**built** TVM under `$TVM_ROOT` (default `~/tvm/src`). Override `TVM_VER
 Point the runtime-tvm image overrides at the built tag (env vars in digitalhub-core):
 
 ```
-RUNTIME_TVM_BUILDER_ONNX | _PYTORCH | _TVMSCRIPT   → tvm+build image   (tvm-toolkit)
-RUNTIME_TVM_COMPILER                               → tvm+compile image (tvm-toolkit)
-# e.g. 192.168.49.1:5000/tvm-toolkit:0.24  (registry ref reachable from inside the cluster)
+RUNTIME_TVM_BUILDER_ONNX   → tvm+build image   (tvm-toolkit)
+RUNTIME_TVM_COMPILER       → tvm+compile image (tvm-toolkit)
+# e.g. 192.168.49.1:5000/tvm-toolkit:0.25  (registry ref reachable from inside the cluster)
 ```
 
 The pod scripts (`entrypoint.sh`, `builder_*.py`, `compiler.py`, `_dh_publish.py`) are NOT
@@ -60,5 +60,5 @@ baked in — CORE injects them at runtime as ContextSources. This image is only 
 - **`tvm+compile` OOMKills (exit 137)** with default resources (~282 MB): linking `model.so`
   needs more. On the compile run set `resources` mem=`8Gi`, cpu=`4`.
 
-CPU + FP32; cross-compile targets via LLVM (x86_64 / aarch64 / armv7). Validated E2E on
+CPU targets, cross-compiled via LLVM (x86_64 / aarch64). Validated E2E on
 TVM 0.24.0 and 0.25.0 (yolov8: `images` FP32 `[1,3,640,640]` → `output0` `[1,84,8400]`).

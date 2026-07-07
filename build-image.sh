@@ -2,6 +2,12 @@
 # Build the tvm-toolkit image (tvm+build / tvm+compile) by packaging the host TVM
 # build (stripped .so + python/tvm). Version-parametric via _tvm-version.sh.
 #   ./build-image.sh [--load] [--push]
+#   TAG=<repo:tag>         image name         (default tvm-toolkit:<version>)
+#   REGISTRY=<host[/org]>  push target prefix (the pushed ref is $REGISTRY/$TAG)
+#   --load  -> minikube image load (local dev)     --push -> push to the registry
+# Remote cluster: build, --push to your registry, then point CORE at the exact
+# pushed ref via RUNTIME_TVM_BUILDER_* and RUNTIME_TVM_COMPILER
+# (e.g. RUNTIME_TVM_COMPILER=ghcr.io/acme/tvm-toolkit:0.25).
 # Requires a locally-built TVM (run ./build-tvm.sh first).
 set -euo pipefail
 
@@ -13,7 +19,7 @@ tvm_assert_built || exit 1
 
 TVM="${TVM:-$TVM_SRC}"
 TAG="${TAG:-tvm-toolkit:$TVM_TAG}"
-REGISTRY="${REGISTRY:-192.168.49.1:5000}"
+REGISTRY="${REGISTRY:-}" # empty = push bare $TAG; set host[/org] to push for a remote cluster
 ctx="$HERE/tvm-toolkit"
 
 LOAD=0; PUSH=0
@@ -38,5 +44,9 @@ docker build -t "$TAG" \
 rm -rf "$ctx/lib" "$ctx/python"
 
 [ "$LOAD" = 1 ] && { echo ">> minikube image load $TAG"; minikube image load "$TAG"; }
-[ "$PUSH" = 1 ] && { docker tag "$TAG" "$REGISTRY/$TAG"; docker push "$REGISTRY/$TAG"; }
+if [ "$PUSH" = 1 ]; then
+    ref="${REGISTRY:+$REGISTRY/}$TAG"
+    docker tag "$TAG" "$ref"; docker push "$ref"
+    echo ">> pushed $ref  (point CORE at it: RUNTIME_TVM_COMPILER / RUNTIME_TVM_BUILDER_*=$ref)"
+fi
 echo "DONE $TAG"
