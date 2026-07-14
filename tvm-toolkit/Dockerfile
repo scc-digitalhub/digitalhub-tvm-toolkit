@@ -14,16 +14,16 @@ ARG LLVM_VERSION=18
 ARG TVM_FFI_VERSION=0.1.11
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python-is-python3 libstdc++6 libgomp1 ca-certificates git \
+        python3 python3-pip python-is-python3 libstdc++6 libgomp1 ca-certificates \
         libllvm${LLVM_VERSION} \
         gcc g++ \
         g++-aarch64-linux-gnu \
-        binutils-aarch64-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 # libllvm18 fornisce libLLVM.so.18.1, richiesta da libtvm_compiler.so (codegen LLVM).
 # gcc/g++ nativi: servono a tvm.contrib.cc.create_shared (export_library) per LINKARE
 # la model.so del target host (llvm x86_64). Senza, get_cc()=None → TypeError nel link.
-# NB: cross-toolchain ARM64 → una sola immagine compila per x86_64, aarch64 (LLVM).
+# NB: cross-toolchain ARM64 → una sola immagine compila per x86_64, aarch64 (LLVM);
+# binutils-aarch64-linux-gnu arriva come dipendenza hard di g++-aarch64-linux-gnu.
 
 # TVM nativo (dal build host risolto, vedi build-image.sh / _tvm-version.sh)
 COPY lib/ /opt/tvm/lib/
@@ -35,7 +35,6 @@ ENV LD_LIBRARY_PATH=/opt/tvm/lib \
 
 # deps Python: tvm-ffi (matching TVM) + onnx + ml_dtypes + l'SDK digitalhub (per pubblicare i Model)
 RUN pip3 install --no-cache-dir --break-system-packages \
-        apache-tvm-ffi==${TVM_FFI_VERSION} onnx ml_dtypes numpy scipy cloudpickle \
-        typing_extensions psutil tornado packaging decorator attrs \
+        apache-tvm-ffi==${TVM_FFI_VERSION} onnx ml_dtypes numpy typing_extensions \
         digitalhub \
     && python3 -c "import tvm; print('tvm', tvm.__version__); import onnx, digitalhub; print('onnx+sdk ok')"
