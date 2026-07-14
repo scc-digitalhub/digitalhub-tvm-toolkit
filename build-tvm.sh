@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Build Apache TVM from source for the selected version: clone (if missing) +
-# init submodules + cmake + ninja. Idempotent (no-op if already built; FORCE=1
-# to reconfigure+rebuild). Heavy (~20-60 min).
+# Build Apache TVM from source: clone + submodules + cmake + ninja. Idempotent
+# (FORCE=1 to reconfigure+rebuild). Heavy (~20-60 min).
 #   build-tvm.sh                    # build the resolved/default version
 #   TVM_VERSION=0.25.0 build-tvm.sh
 #   FORCE=1 build-tvm.sh
@@ -16,7 +15,6 @@ if tvm_is_built && [ "${FORCE:-0}" != 1 ]; then
     exit 0
 fi
 
-# prerequisiti di build
 miss=()
 for t in git cmake ninja "llvm-config-$LLVM_VERSION" g++; do
     command -v "$t" >/dev/null 2>&1 || miss+=("$t")

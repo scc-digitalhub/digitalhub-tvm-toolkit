@@ -4,12 +4,10 @@
 #   TVM_VERSION  TVM_SRC  TVM_BUILD  TVM_TAG  TVM_FFI_VERSION  LLVM_VERSION
 #
 # Override any of:  TVM_VERSION  TVM_FFI_VERSION  LLVM_VERSION  TVM_ROOT
-# Default TVM_VERSION = the latest stable release on GitHub IF it is built
-# locally under $TVM_ROOT/tvm-<v>; otherwise the highest locally-built stable
-# (and it prints a note when a newer stable exists upstream).
+# Default TVM_VERSION = latest upstream stable if built locally, else highest locally-built.
 
 TVM_ROOT="${TVM_ROOT:-$HOME/tvm/src}"
-# dir of this script (for sibling build-tvm.sh references), resolved at source time
+# dir of this script, resolved at source time (for sibling build-tvm.sh references)
 _TVM_DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 _tvm_latest_remote() {
@@ -44,9 +42,7 @@ resolve_tvm_version() {
                 fi
             fi
         elif [ -n "$remote" ]; then
-            # Fresh clone bootstrap: nothing built locally yet, but the latest
-            # stable release is known — use it so ./build-tvm.sh can clone+build.
-            # Callers that need a built tree still fail via tvm_assert_built.
+            # nothing built yet: use latest stable so build-tvm.sh can clone+build (built-tree callers still fail via tvm_assert_built)
             TVM_VERSION="$remote"
             echo ">> nota: nessun TVM compilato in $TVM_ROOT — uso il latest stabile $remote (compila con ./build-tvm.sh)" >&2
         else

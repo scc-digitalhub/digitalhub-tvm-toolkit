@@ -1,15 +1,10 @@
-# Toolkit TVM per build (onnx→IR) e compile (IR→model.so). La VERSIONE non è
-# cablata qui: è quella del build host impacchettato (vedi build-image.sh /
-# _tvm-version.sh) — coerente col runtime di serving Rust della stessa versione.
-#
-# Impacchetta il build host di TVM (lib .so + python/tvm) invece di ricompilare
-# da sorgente in-image. Base ubuntu:24.04 per combaciare con la glibc/libstdc++
-# dell'host di build. Le .so sono già strippate da build-image.sh.
+# Packages the host TVM build (lib .so + python/tvm); version comes from the host,
+# not hard-coded here (see build-image.sh / _tvm-version.sh). ubuntu:24.04 to match
+# the build host's glibc/libstdc++.
 FROM ubuntu:24.04
 
-# Version-coupled deps (passed by build-image.sh from the resolved TVM version):
-#   LLVM_VERSION     libLLVM major (TVM codegen needs the matching libLLVM.so)
-#   TVM_FFI_VERSION  apache-tvm-ffi pip version bundled in this TVM (3rdparty/tvm-ffi)
+# Version-coupled deps: LLVM_VERSION = matching libLLVM major (TVM codegen),
+# TVM_FFI_VERSION = apache-tvm-ffi bundled in this TVM.
 ARG LLVM_VERSION=18
 ARG TVM_FFI_VERSION=0.1.11
 
@@ -18,14 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libllvm${LLVM_VERSION} \
         gcc g++ \
         g++-aarch64-linux-gnu \
+        g++-arm-linux-gnueabihf \
     && rm -rf /var/lib/apt/lists/*
-# libllvm18 fornisce libLLVM.so.18.1, richiesta da libtvm_compiler.so (codegen LLVM).
-# gcc/g++ nativi: servono a tvm.contrib.cc.create_shared (export_library) per LINKARE
-# la model.so del target host (llvm x86_64). Senza, get_cc()=None → TypeError nel link.
-# NB: cross-toolchain ARM64 → una sola immagine compila per x86_64, aarch64 (LLVM);
-# binutils-aarch64-linux-gnu arriva come dipendenza hard di g++-aarch64-linux-gnu.
+# native gcc/g++ let export_library link the host (x86_64) model.so; without them get_cc()=None → link fails.
+# cross-toolchains for aarch64 + armhf targets (binutils rides in as a hard dep of each g++-*).
 
-# TVM nativo (dal build host risolto, vedi build-image.sh / _tvm-version.sh)
 COPY lib/ /opt/tvm/lib/
 COPY python/ /opt/tvm/python/
 
@@ -33,7 +25,6 @@ ENV LD_LIBRARY_PATH=/opt/tvm/lib \
     PYTHONPATH=/opt/tvm/python \
     TVM_LIBRARY_PATH=/opt/tvm/lib
 
-# deps Python: tvm-ffi (matching TVM) + onnx + ml_dtypes + l'SDK digitalhub (per pubblicare i Model)
 RUN pip3 install --no-cache-dir --break-system-packages \
         apache-tvm-ffi==${TVM_FFI_VERSION} onnx ml_dtypes numpy typing_extensions \
         digitalhub \
