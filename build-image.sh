@@ -36,6 +36,18 @@ done
 cp -r "$TVM/python/tvm" "$ctx/python/tvm"
 find "$ctx/python" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
+# Patches carried on top of the packaged TVM python tree. These must apply cleanly:
+# a silently unpatched image builds fine and then fails at run time, so bail out
+# instead. Drop a patch here once the same fix lands in the TVM version we package.
+for p in "$HERE"/patches/*.patch; do
+  [ -e "$p" ] || break
+  echo "== applying $(basename "$p") =="
+  patch -p1 -d "$ctx/python" --forward --no-backup-if-mismatch < "$p" || {
+    echo "FAILED to apply $(basename "$p") to TVM $TVM_VERSION — refusing to build an image without it" >&2
+    exit 1
+  }
+done
+
 echo "== docker build $TAG (tvm-ffi=$TVM_FFI_VERSION llvm=$LLVM_VERSION) =="
 docker build -t "$TAG" \
   --build-arg "TVM_FFI_VERSION=$TVM_FFI_VERSION" \

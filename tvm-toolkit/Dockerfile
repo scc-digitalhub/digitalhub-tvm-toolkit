@@ -26,6 +26,6 @@ ENV LD_LIBRARY_PATH=/opt/tvm/lib \
     TVM_LIBRARY_PATH=/opt/tvm/lib
 
 RUN pip3 install --no-cache-dir --break-system-packages \
-        apache-tvm-ffi==${TVM_FFI_VERSION} onnx ml_dtypes numpy typing_extensions \
+        apache-tvm-ffi==${TVM_FFI_VERSION} tflite onnx ml_dtypes numpy typing_extensions \
         digitalhub \
-    && python3 -c "import tvm; print('tvm', tvm.__version__); import onnx, digitalhub; print('onnx+sdk ok')"
+    && python3 -c "import tvm; print('tvm', tvm.__version__); import onnx, tflite, digitalhub; from tvm.relax.frontend.tflite import from_tflite; print('onnx+tflite+sdk ok')"

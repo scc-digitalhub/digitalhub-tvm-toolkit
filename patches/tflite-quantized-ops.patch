@@ -1,0 +1,124 @@
+Enable quantized TFLite models in the Relax TFLite frontend (TVM 0.25).
+
+Three independent fixes, needed to convert a full-integer-quantized model:
+
+1. _SUPPORTED_QUANTIZED_OPS is missing six operators that the frontend already
+   implements correctly for quantized input:
+
+   - MAX_POOL_2D, PAD, RESIZE_NEAREST_NEIGHBOR, STRIDED_SLICE, TRANSPOSE only move
+     elements around — no arithmetic on the values — and TFLite gives their input and
+     output the same quantization params, so they run unchanged on int8. RESHAPE and
+     RESIZE_BILINEAR, the same class of op, were already on the list.
+   - AVERAGE_POOL_2D does do arithmetic, but convert_pool2d already has a proper
+     quantized path: it casts to int32 to accumulate without overflow, averages, and
+     casts back, guarded by an assert that input and output share scale and zero
+     point — exactly the condition under which averaging quantized values equals
+     averaging the reals.
+
+   In every case the converter code exists and the op is simply absent from the
+   allowlist, so it is rejected before it is ever reached.
+
+2. The quantize/dequantize helpers forward qnn_params["axis"] to relax.op.quantize /
+   relax.op.dequantize, which validate 0 <= axis <= ndim-1. A 0-d scalar operand
+   (e.g. the quantized scalar constant feeding a MUL in YOLOv8) has no valid axis and
+   the build dies with "axis param is out of range (0)". Lift such operands to rank 1
+   for the QDQ call and squeeze them back. Independent of (1): it also fires on ops
+   that were already on the allowlist.
+
+3. convert_pool2d's quantized average path and the FLOAT16 branch call relax.op.cast
+   and relax.cast, neither of which exists in TVM 0.25 (the op is relax.op.astype).
+   That is dead code today: the pool path is unreachable while AVERAGE_POOL_2D is off
+   the allowlist, so enabling (1) exposes it. Fixing it also unbreaks float16 models,
+   which failed with "module 'tvm.relax' has no attribute 'cast'".
+
+Validated on yolov8n full_integer_quant.tflite: 256/256 ops converted, model.so built,
+inference returns "person" at 0.877 confidence (a broken QDQ lowering returns noise).
+AVERAGE_POOL_2D was added later for a yolov8-pose model that needs it.
+
+Not covered: dynamic-range quantization is rejected earlier by a separate check and
+that rejection is correct (activation scales are computed at run time and are not in
+the file); float16 fails elsewhere on a missing relax.cast.
+
+--- a/tvm/relax/frontend/tflite/tflite_frontend.py
++++ b/tvm/relax/frontend/tflite/tflite_frontend.py
+@@ -99,6 +99,12 @@
+     _SUPPORTED_QUANTIZED_OPS = frozenset(
+         {
+             "ABS",
++            "AVERAGE_POOL_2D",
++            "MAX_POOL_2D",
++            "PAD",
++            "RESIZE_NEAREST_NEIGHBOR",
++            "STRIDED_SLICE",
++            "TRANSPOSE",
+             "ADD",
+             "ATAN2",
+             "CEIL",
+@@ -1161,27 +1167,44 @@
+             lhs_zero_point.data.numpy(), rhs_zero_point.data.numpy(), rtol=1e-5, atol=1e-5
+         )
+ 
++    def _lift_scalar(self, expr):
++        """relax.quantize/dequantize require 0 <= axis <= ndim-1; a 0-d scalar has
++        no valid axis, so lift it to rank 1 and squeeze it back afterwards."""
++        try:
++            ndim = len(self.bb.normalize(expr).ty.shape)
++        except Exception:  # noqa: BLE001
++            return expr, False
++        if ndim == 0:
++            return relax.op.reshape(expr, (1,)), True
++        return expr, False
++
+     def quantize(self, expr, tensor_to_quantize):
+         """Helper function to quantize a tensor with Relax"""
+         tensor_type = tensor_to_quantize.tensor.Type()
+         tensor_type_str = self.get_tensor_type_str(tensor_type)
++        expr, lifted = self._lift_scalar(expr)
+         quantized = relax.op.quantize(
+             data=expr,
+             scale=tensor_to_quantize.qnn_params["scale"],
+             zero_point=tensor_to_quantize.qnn_params["zero_point"],
+-            axis=tensor_to_quantize.qnn_params["axis"],
++            axis=0 if lifted else tensor_to_quantize.qnn_params["axis"],
+             out_dtype=tensor_type_str,
+         )
++        if lifted:
++            quantized = relax.op.reshape(quantized, ())
+         return quantized
+ 
+     def dequantize(self, expr, tensor):
+         """Helper function to dequantize a tensor with Relax"""
++        expr, lifted = self._lift_scalar(expr)
+         dequantized = relax.op.dequantize(
+             data=expr,
+             scale=tensor.qnn_params["scale"],
+             zero_point=tensor.qnn_params["zero_point"],
+-            axis=tensor.qnn_params["axis"],
++            axis=0 if lifted else tensor.qnn_params["axis"],
+         )
++        if lifted:
++            dequantized = relax.op.reshape(dequantized, ())
+         return dequantized
+ 
+     def is_quantized(self, op):
+@@ -5411,9 +5434,9 @@
+                     "TFLite avg_pool2dreshape requires input and output scale"
+                     "and zero points to be equal"
+                 )
+-                out = relax.op.cast(in_expr, dtype="int32")
++                out = relax.op.astype(in_expr, dtype="int32")
+                 out = relax.op.nn.avg_pool2d(out, **params)
+-                out = relax.op.cast(out, dtype=output_tensor_type_str)
++                out = relax.op.astype(out, dtype=output_tensor_type_str)
+             else:
+                 out = relax.op.nn.avg_pool2d(in_expr, **params)
+         elif pool_type == "max":
+@@ -7111,7 +7134,7 @@
+             in_expr = self.exp_tab.new_const(
+                 input_value, dtype=dtype, source_name=input_tensor.tensor.Name()
+             )
+-            out = relax.cast(in_expr, dtype="float32")
++            out = relax.op.astype(in_expr, dtype="float32")
+             return out
+ 
+         in_expr = self.get_expr(input_tensor.tensor_idx)

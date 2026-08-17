@@ -5,14 +5,18 @@ the TVM `tvm+build` and `tvm+compile` tasks.
 
 ```
 tvm-toolkit  =  Apache TVM (python + libs) + LLVM + native g++ + ARM cross-toolchain
-                + onnx + digitalhub SDK
-                 · tvm+build     onnx  →  Relax IR   (Model tvm-ir)
-                 · tvm+compile   Relax IR  →  model.so        (Model tvm-so)
+                + onnx + tflite + digitalhub SDK
+                 · tvm+build     onnx | tflite  →  Relax IR   (Model tvm-ir)
+                 · tvm+compile   Relax IR       →  model.so   (Model tvm-so)
 ```
 
-ONNX is the only supported source format. One image covers it for every LLVM target
-(x86_64 + cross-compile aarch64). It packages a **host build of TVM** (the `.so`
-+ `python/tvm`) — it does not compile TVM in-image.
+ONNX and TFLite are the supported source formats, quantized ones included. One image
+covers both for every LLVM target (x86_64 + cross-compile aarch64/armv7l). It packages a
+**host build of TVM** (the `.so` + `python/tvm`) — it does not compile TVM in-image.
+
+Quantization is an axis of its own, independent of the format: a TFLite full-integer
+export and a QDQ ONNX both reach the builders as int8, and both have their affine
+params (`scale`, `zero_point`) carried into `metadata.json`.
 
 > Serving is a separate concern in its own projects: **`digitalhub-tvm-rust`** (rust
 > `tvm-serve` image) and **`digitalhub-serverless`** (native Go runtime image). This
@@ -23,9 +27,10 @@ ONNX is the only supported source format. One image covers it for every LLVM tar
 | file | role |
 |---|---|
 | `build-tvm.sh` | compile Apache TVM from source (cmake+ninja). **Prerequisite**, ~20–60 min, idempotent. |
-| `build-image.sh` | package the host TVM build into the `tvm-toolkit` image. |
+| `build-image.sh` | package the host TVM build into the `tvm-toolkit` image, applying every patch in `patches/`. |
+| `patches/*.patch` | fixes carried on top of the packaged TVM. **They must apply**: the build aborts otherwise, because an unpatched image builds fine and only fails at run time. |
 | `_tvm-version.sh` | auto-resolve the TVM version + coupled deps (`TVM_FFI_VERSION`, `LLVM_VERSION`) and the image tag (`major.minor`). |
-| `tvm-toolkit/Dockerfile` | the image definition (ubuntu:24.04 + LLVM + g++ + cross-toolchain + onnx + SDK). |
+| `tvm-toolkit/Dockerfile` | the image definition (ubuntu:24.04 + LLVM + g++ + cross-toolchain + onnx + tflite + SDK). |
 
 ## Build
 
@@ -47,8 +52,9 @@ locally-**built** TVM under `$TVM_ROOT` (default `~/tvm/src`). Override `TVM_VER
 Point the runtime-tvm image overrides at the built tag (env vars in digitalhub-core):
 
 ```
-RUNTIME_TVM_BUILDER_ONNX   → tvm+build image   (tvm-toolkit)
-RUNTIME_TVM_COMPILER       → tvm+compile image (tvm-toolkit)
+RUNTIME_TVM_BUILDER_ONNX     → tvm+build image, onnx sources    (tvm-toolkit)
+RUNTIME_TVM_BUILDER_TFLITE   → tvm+build image, tflite sources  (tvm-toolkit)
+RUNTIME_TVM_COMPILER         → tvm+compile image                (tvm-toolkit)
 # e.g. 192.168.49.1:5000/tvm-toolkit:0.25  (registry ref reachable from inside the cluster)
 ```
 
