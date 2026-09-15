@@ -1,9 +1,8 @@
-# Builds the multi-arch image ghcr.io/scc-digitalhub/tvm-toolkit:<X.Y> (linux/amd64 and
-# linux/arm64) when a tag X.Y or X.Y.Z is pushed. Each architecture compiles Apache TVM
-# vX.Y.Z natively on its own runner, packages the stripped libraries and python/tvm
-# (+ patches/) and pushes <X.Y>-<arch>; the manifest job then publishes <X.Y>.
-# tvm-runtime-rust and tvm-runtime-go take their TVM libraries from this image:
-# publish it, and make the package public, before tagging those repositories.
+# Builds the multi-arch image ghcr.io/scc-digitalhub/tvm-toolkit:<tag> (linux/amd64 and
+# linux/arm64) when a tag is pushed. The image tag is the git tag: 0.25 builds Apache TVM
+# 0.25.0, 0.26.0 builds 0.26.0. Each architecture compiles TVM natively on its own runner,
+# packages the stripped libraries and python/tvm (+ patches/) and pushes <tag>-<arch>; the
+# manifest job then publishes <tag>.
 name: tvm-toolkit image
 
 on:
@@ -55,7 +54,7 @@ jobs:
           esac
           {
             echo "tvm=$tvm"
-            echo "tag=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            echo "tag=$GITHUB_REF_NAME"
             echo "ffi=$ffi"
           } >> "$GITHUB_OUTPUT"
 
@@ -210,7 +209,7 @@ jobs:
 
       - name: Build image
         run: |
-          # the labels tell tvm-runtime-rust/-go which exact TVM this image carries
+          # the labels record which exact TVM this image carries
           docker build -t "$REF" \
             --build-arg "TVM_VERSION=$TVM_VERSION" \
             --build-arg "TVM_FFI_VERSION=$TVM_FFI_VERSION" \
