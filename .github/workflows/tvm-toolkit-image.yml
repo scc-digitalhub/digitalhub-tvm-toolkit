@@ -1,0 +1,213 @@
+# Builds ghcr.io/scc-digitalhub/tvm-toolkit:<X.Y> when a tag X.Y (or X.Y.Z) is
+# pushed: compiles Apache TVM vX.Y.Z from source, packages the stripped libraries
+# and python/tvm (+ patches/) into tvm-toolkit/ and pushes the image.
+# tvm-runtime-rust and tvm-runtime-go take their TVM libraries from this image:
+# publish it, and make the package public, before tagging those repositories.
+name: tvm-toolkit image
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/scc-digitalhub/tvm-toolkit
+  LLVM_VERSION: "18"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    # same glibc/libstdc++ as the ubuntu:24.04 base image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Resolve versions from the tag
+        id: v
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+            echo "::error::run on a tag X.Y or X.Y.Z, got '$GITHUB_REF_NAME'"
+            exit 1
+          fi
+          tvm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[4]:-0}"
+          # apache-tvm-ffi release bundled with each TVM version
+          case "$tvm" in
+            0.24.*) ffi=0.1.11 ;;
+            0.25.*) ffi=0.1.12 ;;
+            0.26.*) ffi=0.1.13.post2 ;;
+            *) echo "::error::no apache-tvm-ffi mapping for TVM $tvm"; exit 1 ;;
+          esac
+          {
+            echo "tvm=$tvm"
+            echo "tag=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            echo "ffi=$ffi"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build ccache \
+            "llvm-$LLVM_VERSION" "llvm-$LLVM_VERSION-dev" "libpolly-$LLVM_VERSION-dev" \
+            zlib1g-dev libzstd-dev libxml2-dev libedit-dev libffi-dev
+
+      - name: Clone Apache TVM
+        run: |
+          git clone --depth 1 --branch "v${{ steps.v.outputs.tvm }}" --recurse-submodules \
+            --shallow-submodules https://github.com/apache/tvm "$RUNNER_TEMP/tvm"
+          {
+            echo "TVM_SRC=$RUNNER_TEMP/tvm"
+            echo "TVM_GIT_COMMIT=$(git -C "$RUNNER_TEMP/tvm" rev-parse HEAD)"
+            echo "TVM_FFI_GIT_COMMIT=$(git -C "$RUNNER_TEMP/tvm/3rdparty/tvm-ffi" rev-parse HEAD)"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-tvm-${{ steps.v.outputs.tvm }}-${{ github.run_id }}
+          restore-keys: ccache-tvm-${{ steps.v.outputs.tvm }}-
+
+      - name: Build TVM
+        id: tvm
+        env:
+          CCACHE_MAXSIZE: 5G
+        run: |
+          build="$TVM_SRC/build"
+          mkdir -p "$build"
+          cp "$TVM_SRC/cmake/config.cmake" "$build/config.cmake"
+          # same configuration as the local build-tvm.sh
+          {
+            echo "set(USE_LLVM \"llvm-config-$LLVM_VERSION\")"
+            echo "set(CMAKE_BUILD_TYPE RelWithDebInfo)"
+            echo "set(USE_CCACHE AUTO)"
+            echo "set(USE_GTEST OFF)"
+          } >> "$build/config.cmake"
+          cmake -S "$TVM_SRC" -B "$build" -G Ninja
+          ninja -C "$build" -j"$(nproc)"
+          ls -la "$build/lib"
+          ccache --show-stats || true
+
+      # saved even when a later step fails, so a re-run does not recompile TVM
+      - name: Save compiler cache
+        if: always() && steps.tvm.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-tvm-${{ steps.v.outputs.tvm }}-${{ github.run_id }}
+
+      - name: Stage the image build context
+        run: |
+          ctx="$GITHUB_WORKSPACE/tvm-toolkit"
+          lib="$TVM_SRC/build/lib"
+          rm -rf "$ctx/lib" "$ctx/python" "$ctx/provenance.json"
+          mkdir -p "$ctx/lib" "$ctx/python"
+          for so in libtvm_runtime.so libtvm_runtime_extra.so libtvm_ffi.so libtvm_compiler.so; do
+            if [ ! -f "$lib/$so" ]; then
+              # libtvm_runtime_extra.so does not exist in every TVM release
+              [ "$so" = libtvm_runtime_extra.so ] && continue
+              echo "::error::missing $lib/$so"
+              exit 1
+            fi
+            cp "$lib/$so" "$ctx/lib/$so"
+            # RelWithDebInfo libraries are huge (libtvm_compiler ~1.4GB)
+            strip --strip-debug "$ctx/lib/$so"
+          done
+          cp -r "$TVM_SRC/python/tvm" "$ctx/python/tvm"
+          # setuptools_scm writes this when building a wheel; we ship the source tree
+          printf 'version = "%s"\n' "${{ steps.v.outputs.tvm }}" > "$ctx/python/tvm/_version.py"
+          find "$ctx/python" -name __pycache__ -type d -prune -exec rm -rf {} +
+          # an unpatched image builds fine and then fails at run time: patches must apply
+          for p in "$GITHUB_WORKSPACE"/patches/*.patch; do
+            [ -e "$p" ] || break
+            echo "== applying $(basename "$p")"
+            patch -p1 -d "$ctx/python" --forward --no-backup-if-mismatch < "$p"
+          done
+
+      - name: Write provenance.json
+        env:
+          TVM_VERSION: ${{ steps.v.outputs.tvm }}
+          TVM_FFI_VERSION: ${{ steps.v.outputs.ffi }}
+        run: |
+          python3 - <<'PY'
+          import datetime
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          ctx = Path(os.environ["GITHUB_WORKSPACE"]) / "tvm-toolkit"
+          run_url = "{}/{}/actions/runs/{}".format(
+              os.environ["GITHUB_SERVER_URL"], os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"]
+          )
+          manifest = {
+              "schema_version": 1,
+              "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "tvm_version": os.environ["TVM_VERSION"],
+              "tvm_git_commit": os.environ["TVM_GIT_COMMIT"],
+              "tvm_ffi_version": os.environ["TVM_FFI_VERSION"],
+              "tvm_ffi_git_commit": os.environ["TVM_FFI_GIT_COMMIT"],
+              "llvm_version": os.environ["LLVM_VERSION"],
+              "source_dir": os.environ["TVM_SRC"],
+              "build_run": run_url,
+              # hashes of the stripped libraries actually shipped in the image
+              "libraries": {
+                  lib.name: hashlib.sha256(lib.read_bytes()).hexdigest()
+                  for lib in sorted((ctx / "lib").glob("*.so"))
+              },
+          }
+          (ctx / "provenance.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          ref="$IMAGE:${{ steps.v.outputs.tag }}"
+          # the labels tell tvm-runtime-rust/-go which exact TVM this image carries
+          docker build -t "$ref" \
+            --build-arg "TVM_VERSION=${{ steps.v.outputs.tvm }}" \
+            --build-arg "TVM_FFI_VERSION=${{ steps.v.outputs.ffi }}" \
+            --build-arg "TVM_GIT_COMMIT=$TVM_GIT_COMMIT" \
+            --build-arg "TVM_FFI_GIT_COMMIT=$TVM_FFI_GIT_COMMIT" \
+            --build-arg "LLVM_VERSION=$LLVM_VERSION" \
+            --label "org.opencontainers.image.version=${{ steps.v.outputs.tvm }}" \
+            --label "org.opencontainers.image.revision=$TVM_GIT_COMMIT" \
+            --label "org.digitalhub.tvm-ffi.version=${{ steps.v.outputs.ffi }}" \
+            --label "org.digitalhub.tvm-ffi.revision=$TVM_FFI_GIT_COMMIT" \
+            tvm-toolkit
+          docker run --rm "$ref" python3 -c "import tvm; print('tvm', tvm.__version__)"
+
+      - name: Push image
+        run: |
+          ref="$IMAGE:${{ steps.v.outputs.tag }}"
+          docker push "$ref"
+          {
+            echo "### Published \`$ref\`"
+            echo "TVM ${{ steps.v.outputs.tvm }} ($TVM_GIT_COMMIT), apache-tvm-ffi ${{ steps.v.outputs.ffi }}"
+            echo ""
+            echo "On the first publish make the package public: organization → Packages → tvm-toolkit → Package settings."
+          } >> "$GITHUB_STEP_SUMMARY"
