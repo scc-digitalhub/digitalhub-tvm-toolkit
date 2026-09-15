@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: © 2025 DSLab - Fondazione Bruno Kessler
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Packages the host TVM build (lib .so + python/tvm); version comes from the host,
 # not hard-coded here (see build-image.sh / _tvm-version.sh). ubuntu:24.04 to match
 # the build host's glibc/libstdc++.
