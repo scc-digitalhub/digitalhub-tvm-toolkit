@@ -1,85 +1,123 @@
 # digitalhub-tvm-toolkit
 
-Builds the **`tvm-toolkit`** Docker image — the single image DigitalHub CORE runs for
-the TVM `tvm+build` and `tvm+compile` tasks.
+The **`ghcr.io/scc-digitalhub/tvm-toolkit`** image: the toolchain that DigitalHub CORE
+(`runtime-tvm`) runs for the **`tvm+build`** and **`tvm+compile`** tasks.
 
 ```
-tvm-toolkit  =  Apache TVM (python + libs) + LLVM + native g++ + ARM cross-toolchain
-                + onnx + tflite + MetaSchedule tuning deps + digitalhub SDK
-                 · tvm+build     onnx | tflite  →  Relax IR   (Model tvm-ir)
-                 · tvm+compile   Relax IR       →  model.so   (Model tvm-so)
+tvm+build     onnx | tflite  ──►  Relax IR   (Model tvm-ir)
+tvm+compile   Relax IR       ──►  model.so   (Model tvm-so), optionally tuned
 ```
 
-ONNX and TFLite are the supported source formats, quantized ones included. One image
-covers both for every LLVM target (x86_64 + cross-compile aarch64/armv7l), and it is
-published for `linux/amd64` and `linux/arm64`.
+The image holds only the tools. The scripts that do the work (`entrypoint.sh`,
+`builder_onnx.py`, `builder_tflite.py`, `compiler.py`, `_dh_publish.py`) live in
+`runtime-tvm`, and CORE injects them into each Job. Serving uses other images:
+`tvm-runtime-go` (`digitalhub-serverless`) and `tvm-runtime-rust` (`digitalhub-tvm-rust`).
 
-Quantization is an axis of its own, independent of the format: a TFLite full-integer
-export and a QDQ ONNX both reach the builders as int8, and both have their affine
-params (`scale`, `zero_point`) carried into `metadata.json`.
+## What is inside
 
-> Serving is a separate concern in its own projects: **`digitalhub-serverless`** (native
-> Go runtime image, CORE's default) and **`digitalhub-tvm-rust`** (Rust `tvm-serve`
-> image). This project builds only the build/compile toolkit.
+| Component      | Details                                                                                |
+| -------------- | -------------------------------------------------------------------------------------- |
+| Apache TVM     | Compiler and runtime libraries in `/opt/tvm/lib`, Python package in `/opt/tvm/python`. |
+| apache-tvm-ffi | Python wheel linked to the `libtvm_ffi.so` of the same TVM build.                      |
+| LLVM           | `libllvm18`, used by TVM to generate code.                                             |
+| C++ compilers  | Native `g++`, `aarch64-linux-gnu-g++` (arm64) and `arm-linux-gnueabihf-g++` (armv7l).  |
+| Model formats  | `onnx`, `onnxsim`, `tflite`.                                                           |
+| Tuning         | What MetaSchedule needs: `xgboost`, `cloudpickle`, `psutil`, `scipy`.                  |
+| DigitalHub SDK | `digitalhub`, to upload the results as Models.                                         |
+| Build record   | `/opt/tvm/provenance.json`: versions, commits and SHA-256 of the libraries.            |
 
-## What is in the repository
+Base image `ubuntu:24.04`, published for `linux/amd64` and `linux/arm64`. Both can compile
+for every `tvm+compile` target (x86, arm64, armv7l).
 
-| file                                     | role                                                                                                                                                          |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/tvm-toolkit-image.yml` | builds and publishes the image when a tag is pushed (see below).                                                                                             |
-| `tvm-toolkit/Dockerfile`                 | the image definition (ubuntu:24.04 + LLVM + g++ + cross-toolchain + onnx + tflite + tuning deps + SDK).                                                       |
-| `patches/*.patch`                        | fixes carried on top of the packaged TVM. **They must apply**: the build aborts otherwise, because an unpatched image builds fine and only fails at run time. |
+### Environment variables
 
-## Build
+| Variable                                | Value                                       |
+| --------------------------------------- | ------------------------------------------- |
+| `TVM_VERSION`, `TVM_GIT_COMMIT`         | Apache TVM release and commit in the image. |
+| `TVM_FFI_VERSION`, `TVM_FFI_GIT_COMMIT` | apache-tvm-ffi release and commit.          |
+| `PYTHONPATH`                            | `/opt/tvm/python`                           |
+| `LD_LIBRARY_PATH`, `TVM_LIBRARY_PATH`   | `/opt/tvm/lib`                              |
 
-The image is built by GitHub Actions when a tag is pushed. **The image tag is the git
-tag**, and it names the Apache TVM release: pushing `0.26.0` publishes
-`ghcr.io/scc-digitalhub/tvm-toolkit:0.26.0` built on TVM `0.26.0` (the matching
-`apache-tvm-ffi` wheel and LLVM major are resolved by the workflow).
+`compiler.py` copies `TVM_VERSION` and `TVM_GIT_COMMIT` into the `metadata.json` of every
+compiled model, and the serve images refuse models whose values differ from their own.
 
-For each architecture, on a native runner, the workflow compiles Apache TVM with LLVM,
-applies every patch in `patches/`, stages the libraries, `python/tvm` and a provenance
-manifest, and builds the image. The Dockerfile then rewires the `apache-tvm-ffi` wheel
-to the `libtvm_ffi.so` of that same build and checks every import. A last job joins
-the two images into one multi-architecture tag.
+## Versions and tags
+
+**The image tag is the git tag, and it is the Apache TVM version**: tag `0.26.0` builds
+`tvm-toolkit:0.26.0` on Apache TVM `0.26.0`.
+
+| TVM      | apache-tvm-ffi | LLVM |
+| -------- | -------------- | ---- |
+| `0.24.x` | `0.1.11`       | 18   |
+| `0.25.x` | `0.1.12`       | 18   |
+| `0.26.x` | `0.1.13.post2` | 18   |
+
+A new TVM version needs its apache-tvm-ffi release added to the workflow. Next to the
+multi-architecture tag, each architecture also gets its own tag (`<tag>-amd64`,
+`<tag>-arm64`).
+
+## Release
+
+Push a tag `X.Y.Z` (or `X.Y`) and GitHub Actions (`.github/workflows/tvm-toolkit-image.yml`)
+does the rest. For each architecture, on a native runner, it:
+
+1. compiles Apache TVM `vX.Y.Z` with LLVM;
+2. copies the libraries and `python/tvm`, and applies every patch in `patches/`;
+3. writes `provenance.json` and builds the image, which links the apache-tvm-ffi wheel to
+   the TVM build and checks every import;
+4. pushes `<tag>-<arch>`.
+
+A last job joins the images into the multi-architecture tag. To rebuild a release, run the
+workflow by hand on its tag.
+
+### Build arguments
+
+The workflow passes them to `tvm-toolkit/Dockerfile`. The build context must contain
+`lib/`, `python/` and `provenance.json`.
+
+| Argument             | Default        | Description                                 |
+| -------------------- | -------------- | ------------------------------------------- |
+| `TVM_VERSION`        | `0.26.0`       | Apache TVM release in `lib/` and `python/`. |
+| `TVM_GIT_COMMIT`     | `unknown`      | Commit of that release.                     |
+| `TVM_FFI_VERSION`    | `0.1.13.post2` | apache-tvm-ffi wheel to install.            |
+| `TVM_FFI_GIT_COMMIT` | `unknown`      | Commit of tvm-ffi.                          |
+| `LLVM_VERSION`       | `18`           | LLVM library to install.                    |
+
+## Patches
+
+The files in `patches/` are applied to the TVM Python package. **They must apply**: the
+build stops otherwise, because an image without them builds fine and fails only at run
+time.
+
+| Patch                        | Why                                                                                                                                             |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tflite-quantized-ops.patch` | Lets the TFLite importer convert full-integer quantized models: enables six operators it already supports and fixes scalar quantized constants. |
 
 ## Use from CORE
 
-The runtime-tvm defaults point at the published tag. To try another build, override the
-images with env vars in digitalhub-core:
+`runtime-tvm` uses the published tag by default. To try another image, set on CORE:
 
-```
-RUNTIME_TVM_BUILDER_ONNX     → tvm+build image, onnx sources    (tvm-toolkit)
-RUNTIME_TVM_BUILDER_TFLITE   → tvm+build image, tflite sources  (tvm-toolkit)
-RUNTIME_TVM_COMPILER         → tvm+compile image                (tvm-toolkit)
-# e.g. 192.168.49.1:5000/tvm-toolkit:0.26.0  (registry ref reachable from inside the cluster)
-```
+| Variable                     | Used by                    |
+| ---------------------------- | -------------------------- |
+| `RUNTIME_TVM_BUILDER_ONNX`   | `tvm+build`, ONNX models   |
+| `RUNTIME_TVM_BUILDER_TFLITE` | `tvm+build`, TFLite models |
+| `RUNTIME_TVM_COMPILER`       | `tvm+compile`              |
 
-The pod scripts (`entrypoint.sh`, `builder_*.py`, `compiler.py`, `_dh_publish.py`) are NOT
-baked in — CORE injects them at runtime as ContextSources. This image is only the toolchain.
+A single run can also set `image` in its task.
 
-## Compiling for speed
+Tips:
 
-On CPU, TVM has no default schedule for the operators: without tuning they are compiled
-as plain loops, often many times slower than ONNX Runtime. `tvm+compile` can tune them
-with **MetaSchedule**, which this image fully supports:
+- **Memory.** Compiling needs more than the default resources: give `tvm+compile` at
+  least `mem: 8Gi` and `cpu: 4`, or the Job is killed (exit code 137).
+- **Speed.** Untuned CPU code is slow. The `runtime-tvm` README explains tuning and lists
+  all the task options.
 
-- `tuning_mode: tune` measures candidate schedules on the compile Job and keeps the best
-  ones in a database published with the model (`tuning/`);
-- `tuning_mode: apply` reuses such a database for the same IR and target, without
-  measuring again;
-- on LLVM targets the weights are also **prepacked** into the layout the tuned schedules
-  prefer (TVM's `cpu_weight_prepack`);
-- every compile times a few inferences of the finished `model.so` (`benchmark_runs`) and
-  records them in `metadata.json`, so builds can be compared.
+## Related projects
 
-Give the tuning enough trials: at least `tasks × min(64, max_trials_per_task)` to measure
-every task once. See the runtime-tvm README in digitalhub-core for all the options.
+| Project                                    | Role                                    |
+| ------------------------------------------ | --------------------------------------- |
+| `digitalhub-core` (`runtimes/runtime-tvm`) | Runs the tasks and injects the scripts. |
+| `digitalhub-serverless` (`tvm-runtime-go`) | Default serve image.                    |
+| `digitalhub-tvm-rust` (`tvm-runtime-rust`) | Alternative serve image.                |
 
-## Gotcha
-
-- **`tvm+compile` OOMKills (exit 137)** with default resources (~282 MB): linking `model.so`
-  needs more. On the compile run set `resources` mem=`8Gi`, cpu=`4`.
-
-CPU targets, cross-compiled via LLVM (x86_64 / aarch64 / armv7l). Validated E2E on
-TVM 0.26.0 (yolov8: `images` FP32 `[1,3,640,640]` → `output0` `[1,84,8400]`).
+The images of one release must share the same TVM version and commit.
