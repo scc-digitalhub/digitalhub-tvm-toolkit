@@ -1,6 +1,6 @@
-Enable quantized TFLite models in the Relax TFLite frontend (TVM 0.25).
+Enable quantized TFLite models in the Relax TFLite frontend (TVM 0.26).
 
-Three independent fixes, needed to convert a full-integer-quantized model:
+Two independent fixes, needed to convert a full-integer-quantized model:
 
 1. _SUPPORTED_QUANTIZED_OPS is missing six operators that the frontend already
    implements correctly for quantized input:
@@ -25,11 +25,8 @@ Three independent fixes, needed to convert a full-integer-quantized model:
    for the QDQ call and squeeze them back. Independent of (1): it also fires on ops
    that were already on the allowlist.
 
-3. convert_pool2d's quantized average path and the FLOAT16 branch call relax.op.cast
-   and relax.cast, neither of which exists in TVM 0.25 (the op is relax.op.astype).
-   That is dead code today: the pool path is unreachable while AVERAGE_POOL_2D is off
-   the allowlist, so enabling (1) exposes it. Fixing it also unbreaks float16 models,
-   which failed with "module 'tvm.relax' has no attribute 'cast'".
+TVM 0.26 already uses relax.op.astype in the quantized average-pool and FLOAT16
+paths, so obsolete cast-fix hunks are no longer needed.
 
 Validated on yolov8n full_integer_quant.tflite: 256/256 ops converted, model.so built,
 inference returns "person" at 0.877 confidence (a broken QDQ lowering returns noise).
@@ -101,24 +98,3 @@ the file); float16 fails elsewhere on a missing relax.cast.
          return dequantized
  
      def is_quantized(self, op):
-@@ -5411,9 +5434,9 @@
-                     "TFLite avg_pool2dreshape requires input and output scale"
-                     "and zero points to be equal"
-                 )
--                out = relax.op.cast(in_expr, dtype="int32")
-+                out = relax.op.astype(in_expr, dtype="int32")
-                 out = relax.op.nn.avg_pool2d(out, **params)
--                out = relax.op.cast(out, dtype=output_tensor_type_str)
-+                out = relax.op.astype(out, dtype=output_tensor_type_str)
-             else:
-                 out = relax.op.nn.avg_pool2d(in_expr, **params)
-         elif pool_type == "max":
-@@ -7111,7 +7134,7 @@
-             in_expr = self.exp_tab.new_const(
-                 input_value, dtype=dtype, source_name=input_tensor.tensor.Name()
-             )
--            out = relax.cast(in_expr, dtype="float32")
-+            out = relax.op.astype(in_expr, dtype="float32")
-             return out
- 
-         in_expr = self.get_expr(input_tensor.tensor_idx)
