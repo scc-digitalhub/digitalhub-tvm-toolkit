@@ -9,8 +9,8 @@ tvm+compile   Relax IR       ──►  model.so   (Model tvm-so), optionally tu
 ```
 
 The image holds only the tools. The scripts that do the work (`entrypoint.sh`,
-`builder_onnx.py`, `builder_tflite.py`, `compiler.py`, `_dh_publish.py`) live in
-`runtime-tvm`, and CORE injects them into each Job. Serving uses other images:
+`build_onnx.py`, `build_tflite.py`, `compile_model.py`, `tuning.py`, `benchmark.py`,
+`publish.py`, `common.py`) live in `runtime-tvm`, and CORE injects them into each Job. Serving uses other images:
 `tvm-runtime-go` (`digitalhub-serverless`) and `tvm-runtime-rust` (`digitalhub-tvm-rust`).
 
 ## What is inside
@@ -38,7 +38,7 @@ for every `tvm+compile` target (x86, arm64, armv7l).
 | `PYTHONPATH`                            | `/opt/tvm/python`                           |
 | `LD_LIBRARY_PATH`, `TVM_LIBRARY_PATH`   | `/opt/tvm/lib`                              |
 
-`compiler.py` copies `TVM_VERSION` and `TVM_GIT_COMMIT` into the `metadata.json` of every
+`compile_model.py` copies `TVM_VERSION` and `TVM_GIT_COMMIT` into the `metadata.json` of every
 compiled model, and the serve images refuse models whose values differ from their own.
 
 ## Versions and tags
