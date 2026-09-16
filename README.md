@@ -93,18 +93,6 @@ builds and publishes the image. For each architecture, on a native runner, it:
 A last job publishes the multi-architecture tag. To rebuild a release, run the workflow by
 hand on its tag. A new TVM version first needs its apache-tvm-ffi release in the workflow.
 
-## Build locally
-
-```bash
-TVM_VERSION=0.26.0 ./build-tvm.sh   # clones and compiles Apache TVM in ~/tvm/src (20-60 min)
-./build-image.sh                    # builds the image tvm-toolkit:0.26
-./build-image.sh --load             # ... and loads it into minikube
-REGISTRY=registry.example.com ./build-image.sh --push
-```
-
-`build-tvm.sh` needs `git`, `cmake`, `ninja`, `llvm-18`, `g++` and `python3`. Set `TAG` to
-choose another image name.
-
 ## Patches
 
 The patches in `patches/` are applied to the TVM Python package. If one does not apply,
