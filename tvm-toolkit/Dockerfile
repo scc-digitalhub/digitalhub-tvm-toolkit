@@ -27,12 +27,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         g++-aarch64-linux-gnu \
         g++-arm-linux-gnueabihf \
     && rm -rf /var/lib/apt/lists/*
-# native gcc/g++ let export_library link the host (x86_64) model.so; without them get_cc()=None → link fails.
-# cross-toolchains for aarch64 + armhf targets (binutils rides in as a hard dep of each g++-*).
+# Native and cross compilers link model.so for the host, aarch64 and armhf.
 
 COPY lib/ /opt/tvm/lib/
 COPY python/ /opt/tvm/python/
 COPY provenance.json /opt/tvm/provenance.json
+COPY check_image.py /opt/tvm/check_image.py
 
 ENV LD_LIBRARY_PATH=/opt/tvm/lib \
     PYTHONPATH=/opt/tvm/python \
@@ -54,4 +54,4 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     && test -f "${FFI_LIB}" \
     && rm "${FFI_LIB}" \
     && ln -s /opt/tvm/lib/libtvm_ffi.so "${FFI_LIB}" \
-    && python3 -c "import importlib.metadata as md, json, os, pathlib, tvm; provenance=json.loads(pathlib.Path('/opt/tvm/provenance.json').read_text()); assert tvm.__version__ == os.environ['TVM_VERSION']; assert md.version('apache-tvm-ffi') == os.environ['TVM_FFI_VERSION']; assert provenance['tvm_git_commit'] == os.environ['TVM_GIT_COMMIT']; assert provenance['tvm_ffi_git_commit'] == os.environ['TVM_FFI_GIT_COMMIT']; loaded={line.split()[-1] for line in open('/proc/self/maps') if line.split()[-1].endswith('/libtvm_ffi.so')}; assert loaded == {'/opt/tvm/lib/libtvm_ffi.so'}, loaded; print('tvm', tvm.__version__, 'ffi', md.version('apache-tvm-ffi'), 'provenance ok'); import cloudpickle, onnx, onnxsim, psutil, tflite, xgboost, digitalhub; from tvm.relax.frontend.tflite import from_tflite; from tvm.backend import _autoload_backends; assert tvm.get_global_func('tvm.contrib.random.random_fill_for_measure', allow_missing=True); print('onnx+onnxsim+tflite+metaschedule+sdk ok')"
+    && python3 /opt/tvm/check_image.py

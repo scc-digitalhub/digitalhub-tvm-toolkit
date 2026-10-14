@@ -216,10 +216,6 @@ jobs:
             --build-arg "TVM_GIT_COMMIT=$TVM_GIT_COMMIT" \
             --build-arg "TVM_FFI_GIT_COMMIT=$TVM_FFI_GIT_COMMIT" \
             --build-arg "LLVM_VERSION=$LLVM_VERSION" \
-            --label "org.opencontainers.image.version=$TVM_VERSION" \
-            --label "org.opencontainers.image.revision=$TVM_GIT_COMMIT" \
-            --label "org.digitalhub.tvm-ffi.version=$TVM_FFI_VERSION" \
-            --label "org.digitalhub.tvm-ffi.revision=$TVM_FFI_GIT_COMMIT" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.description=$DESCRIPTION" \
             tvm-toolkit

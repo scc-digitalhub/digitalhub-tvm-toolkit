@@ -20,7 +20,7 @@ Runtime Rust**.
 | Apache TVM     | Compiler and runtime libraries in `/opt/tvm/lib`, Python package in `/opt/tvm/python`. |
 | apache-tvm-ffi | Python wheel linked to the `libtvm_ffi.so` of the same TVM build.                      |
 | LLVM           | `libllvm18`, used by TVM to generate the code.                                         |
-| C++ compilers  | Native `g++`, `aarch64-linux-gnu-g++` (arm64) and `arm-linux-gnueabihf-g++` (armv7l).  |
+| C++ compilers  | Native `g++`, `aarch64-linux-gnu-g++` (ARM64) and `arm-linux-gnueabihf-g++` (ARM32: ARMv7 hard-float). |
 | Importers      | `onnx`, `onnxsim` and `tflite`, including full-integer quantized TFLite models.        |
 | Tuning         | What MetaSchedule needs: `xgboost`, `cloudpickle`, `psutil`, `scipy`.                  |
 | DigitalHub SDK | `digitalhub`, to publish the results as Models.                                        |
@@ -28,12 +28,21 @@ Runtime Rust**.
 
 The image is based on `ubuntu:24.04` and published for `linux/amd64` and `linux/arm64`:
 
-| Image variant | Compiles for                               |
-| ------------- | ------------------------------------------ |
-| `amd64`       | `cpu`, every x86 target, `arm64`, `armv7l` |
-| `arm64`       | `cpu`, `arm64`, `armv7l`                   |
+| Image variant | CORE target CPU profiles |
+| ------------- | ------------------------ |
+| `amd64` | `auto`, `amd64`, `amd64_v3`, `amd64_native`, `arm64`, `arm64_pi5`, `arm32` |
+| `arm64` | `auto`, `arm64`, `arm64_pi5`, `arm32` |
 
-CORE runs the compile of the x86 targets on `amd64` nodes, so a cluster can mix both.
+CORE runs the compile of the AMD64 profiles on `amd64` nodes, so a cluster can mix both.
+`auto` uses the compile node's architecture. `amd64` means Intel/AMD 64-bit (x86-64-v2),
+`arm64` means ARM 64-bit (AArch64), and `arm32` requires ARMv7 hard-float with NEON.
+The older CORE names (`cpu`/`llvm`, `x86`, `x86_v3`, `x86_native`, `armv7l`) remain
+accepted aliases; LLVM triples and toolchain names have not changed. The toolkit has
+no ARM32 image: the ARM32 profile is cross-compiled from one of the two image variants.
+Both Go and Rust runtime image builds cover AMD64, ARM64 and ARMv7; ARM32 compilation
+and inference remain supported. Serving through CORE on an ARM32 node additionally
+requires an ARMv7-compatible init image: CORE's default init image covers only AMD64
+and ARM64. Running the compiler on ARM32 is separate and has no toolkit image.
 
 ### Environment variables
 
