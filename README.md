@@ -66,14 +66,16 @@ and the serve images refuse a model built with another TVM version or commit.
 | `RUNTIME_TVM_BUILDER_TFLITE` | `tvm+build`, TFLite models |
 | `RUNTIME_TVM_COMPILER`       | `tvm+compile`              |
 
-A single run can also set `image`.
+A single run can also set `image`. Build conversion flags, compile targets and tuning
+are CORE **run** options, not reusable task settings. Tasks retain common resources,
+profiles, environment variables, secrets and volumes; the toolkit's environment interface is unchanged.
 
 Tips:
 
 - **Memory.** Give `tvm+compile` at least `mem: 8Gi` and `cpu: 4`, or the Job may be
   killed (exit code 137).
 - **Speed.** Untuned CPU code is slow: tune the model with MetaSchedule. The
-  `runtime-tvm` README explains how and lists all the task options.
+  `runtime-tvm` README explains how and lists all the run options.
 
 ## Versions
 
