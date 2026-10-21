@@ -5,6 +5,8 @@
 import importlib.metadata as md
 import json
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import tvm
@@ -29,9 +31,26 @@ import onnxsim
 import psutil
 import tflite
 import xgboost
-import digitalhub
+import requests
 from tvm.relax.frontend.tflite import from_tflite
-from tvm.backend import _autoload_backends
 
 assert tvm.get_global_func("tvm.contrib.random.random_fill_for_measure", allow_missing=True)
-print("onnx+onnxsim+tflite+metaschedule+sdk ok")
+assert md.packages_distributions().get("digitalhub") is None
+print("onnx+onnxsim+tflite+metaschedule+http ok; no DigitalHub SDK")
+
+from tvm import tirx
+
+probe = tirx.PrimFunc([], tirx.Evaluate(0)).with_attr("global_symbol", "toolchain_probe")
+for triple, compiler in (
+    ("x86_64-linux-gnu", "x86_64-linux-gnu-g++"),
+    ("aarch64-linux-gnu", "aarch64-linux-gnu-g++"),
+    ("armv7l-unknown-linux-gnueabihf", "arm-linux-gnueabihf-g++"),
+):
+    assert shutil.which(compiler), compiler
+    target = {"kind": "llvm", "mtriple": triple}
+    if triple.startswith("armv7"):
+        target.update({"mfloat-abi": "hard", "mattr": ["+neon"]})
+    module = tvm.tirx.build(tvm.IRModule({"toolchain_probe": probe}), target=tvm.target.Target(target))
+    with tempfile.TemporaryDirectory() as folder:
+        module.export_library(str(Path(folder) / "probe.so"), cc=compiler)
+    print("toolchain ok:", triple, compiler)

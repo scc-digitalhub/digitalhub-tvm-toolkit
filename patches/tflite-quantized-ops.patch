@@ -32,9 +32,8 @@ Validated on yolov8n full_integer_quant.tflite: 256/256 ops converted, model.so 
 inference returns "person" at 0.877 confidence (a broken QDQ lowering returns noise).
 AVERAGE_POOL_2D was added later for a yolov8-pose model that needs it.
 
-Not covered: dynamic-range quantization is rejected earlier by a separate check and
-that rejection is correct (activation scales are computed at run time and are not in
-the file); float16 fails elsewhere on a missing relax.cast.
+Not covered: dynamic-range quantization, which is rejected by a separate check.
+FLOAT16 conversion already uses relax.op.astype in TVM 0.26 and needs no cast fix here.
 
 --- a/tvm/relax/frontend/tflite/tflite_frontend.py
 +++ b/tvm/relax/frontend/tflite/tflite_frontend.py

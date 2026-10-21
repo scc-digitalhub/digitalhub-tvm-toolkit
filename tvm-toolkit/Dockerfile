@@ -24,10 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python-is-python3 libstdc++6 libgomp1 ca-certificates \
         libllvm${LLVM_VERSION} \
         gcc g++ \
+        g++-x86-64-linux-gnu \
         g++-aarch64-linux-gnu \
         g++-arm-linux-gnueabihf \
     && rm -rf /var/lib/apt/lists/*
-# Native and cross compilers link model.so for the host, aarch64 and armhf.
+# Both host images link models for AMD64, ARM64 and ARMv7 hard-float.
 
 COPY lib/ /opt/tvm/lib/
 COPY python/ /opt/tvm/python/
@@ -44,12 +45,12 @@ ENV LD_LIBRARY_PATH=/opt/tvm/lib \
 
 # Python side: the frontends (onnx, onnxsim, tflite), what MetaSchedule tuning needs
 # (xgboost cost model, cloudpickle and psutil for the builder workers, scipy) and the
-# digitalhub SDK that publishes the Models. The tvm-ffi wheel is then rewired to the
+# HTTP client that publishes the Models. The tvm-ffi wheel is then rewired to the
 # libtvm_ffi.so of this TVM build, and every import is checked before the image is done.
 RUN pip3 install --no-cache-dir --break-system-packages \
         apache-tvm-ffi==${TVM_FFI_VERSION} tflite onnx onnxsim==0.7.3 ml_dtypes numpy typing_extensions \
         cloudpickle psutil scipy xgboost-cpu \
-        digitalhub \
+        requests \
     && FFI_LIB="$(python3 -c 'import importlib.util, pathlib; print(pathlib.Path(importlib.util.find_spec("tvm_ffi").origin).parent / "lib/libtvm_ffi.so")')" \
     && test -f "${FFI_LIB}" \
     && rm "${FFI_LIB}" \
