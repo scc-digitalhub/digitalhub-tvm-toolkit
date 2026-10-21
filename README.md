@@ -75,9 +75,11 @@ to the scripts through environment variables.
 
 ### Configurable targets
 
-CORE reads profile names, labels and TVM target strings from `runtime-tvm.yaml`.
-The toolkit does not duplicate this catalogue. A run can select a configured
-`target_architecture`, or pass an explicit standard LLVM `target` object.
+CORE reads profiles from `runtime-tvm.yaml`: `target` contains standard TVM options
+as a YAML mapping; `linker.command` and `linker.options` configure the C++ linker.
+CORE converts the target to the same JSON consumed by the compile script, preserving
+lists and numbers. The toolkit does not duplicate this catalogue. A run can select
+a configured `target_architecture`, or pass an explicit standard LLVM `target` object.
 
 `optimization.cross_cc` selects the compiler; `optimization.cross_cc_options` is an
 array of arguments such as `["--sysroot=/opt/sysroots/arm64"]`. Paths refer to the
