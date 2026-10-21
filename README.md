@@ -20,20 +20,31 @@ Runtime Rust**.
 | Apache TVM     | Compiler and runtime libraries in `/opt/tvm/lib`, Python package in `/opt/tvm/python`. |
 | apache-tvm-ffi | Python wheel linked to the `libtvm_ffi.so` of the same TVM build.                      |
 | LLVM           | `libllvm18`, used by TVM to generate the code.                                         |
-| C++ compilers  | Native `g++`, `aarch64-linux-gnu-g++` (arm64) and `arm-linux-gnueabihf-g++` (armv7l).  |
+| C++ compilers  | Native `g++`, `x86_64-linux-gnu-g++` (AMD64), `aarch64-linux-gnu-g++` (ARM64), `arm-linux-gnueabihf-g++` (ARM32: ARMv7 hard-float). |
 | Importers      | `onnx`, `onnxsim` and `tflite`, including full-integer quantized TFLite models.        |
 | Tuning         | What MetaSchedule needs: `xgboost`, `cloudpickle`, `psutil`, `scipy`.                  |
-| DigitalHub SDK | `digitalhub`, to publish the results as Models.                                        |
+| HTTP client    | `requests`, for direct CORE calls and signed artifact uploads; no DigitalHub SDK. |
 | Build record   | `/opt/tvm/provenance.json`: versions, commits and SHA-256 of the TVM libraries.        |
 
 The image is based on `ubuntu:24.04` and published for `linux/amd64` and `linux/arm64`:
 
-| Image variant | Compiles for                               |
-| ------------- | ------------------------------------------ |
-| `amd64`       | `cpu`, every x86 target, `arm64`, `armv7l` |
-| `arm64`       | `cpu`, `arm64`, `armv7l`                   |
+| Image variant | CORE target CPU profiles |
+| ------------- | ------------------------ |
+| `amd64` | `auto`, `amd64`, `amd64_v3`, `amd64_native`, `arm64`, `arm64_pi5`, `arm32` |
+| `arm64` | `auto`, `amd64`, `amd64_v3`, `arm64`, `arm64_pi5`, `arm32` |
 
-CORE runs the compile of the x86 targets on `amd64` nodes, so a cluster can mix both.
+Only `amd64_native` requires an AMD64 compile node. Both image variants include the
+AMD64, ARM64 and ARM32 toolchains; `check_image.py` links an LLVM probe for each one
+when building the image. These checks do not execute foreign code.
+`auto` uses the compile node's architecture. `amd64` means Intel/AMD 64-bit (x86-64-v2),
+`arm64` means ARM 64-bit (AArch64), and `arm32` requires ARMv7 hard-float with NEON.
+The older CORE names (`cpu`/`llvm`, `x86`, `x86_v3`, `x86_native`, `armv7l`) remain
+accepted aliases; LLVM triples and toolchain names have not changed. The toolkit has
+no ARM32 image: the ARM32 profile is cross-compiled from one of the two image variants.
+Both Go and Rust runtime image builds cover AMD64, ARM64 and ARMv7; ARM32 compilation
+and inference remain supported. Serving through CORE on an ARM32 node additionally
+requires an ARMv7-compatible init image: CORE's default init image covers only AMD64
+and ARM64. Running the compiler on ARM32 is separate and has no toolkit image.
 
 ### Environment variables
 
@@ -57,14 +68,41 @@ and the serve images refuse a model built with another TVM version or commit.
 | `RUNTIME_TVM_BUILDER_TFLITE` | `tvm+build`, TFLite models |
 | `RUNTIME_TVM_COMPILER`       | `tvm+compile`              |
 
-A single run can also set `image`.
+A single run can also set `image`. Build conversion flags, compile targets and tuning
+are CORE **run** options, not reusable task settings. Tasks retain common resources,
+profiles, environment variables, secrets and volumes. CORE passes the run options
+to the scripts through environment variables.
+
+### Configurable targets
+
+CORE reads profile names, labels and TVM target strings from `runtime-tvm.yaml`.
+The toolkit does not duplicate this catalogue. A run can select a configured
+`target_architecture`, or pass an explicit standard LLVM `target` object.
+
+`optimization.cross_cc` selects the compiler; `optimization.cross_cc_options` is an
+array of arguments such as `["--sysroot=/opt/sysroots/arm64"]`. Paths refer to the
+compile container. For another architecture, supply a compatible compile image with
+the required LLVM backend, toolchain and libraries. A new profile alone does not add
+those tools or a serving image.
+
+CORE checks the toolchain by linking a small LLVM object before compiling the model.
+Local tuning and benchmarks require a compatible host architecture, ABI and CPU
+features; setting `cross_cc` alone does not disable them. MetaSchedule candidates and
+the final library use the same compiler options; RPC devices load the linked candidates.
+CUDA and other device backends are not part of this CPU pipeline.
+
+Build and compile scripts call CORE directly over HTTP. CORE supplies signed upload
+URLs and selects the storage location; the scripts upload the files, register the
+Model and verify its run output. Large files use CORE's multipart upload endpoints.
+The image does not install or call the DigitalHub SDK. CORE authentication uses the
+Job's existing `DHCORE_*` environment variables; credentials are not forwarded to storage.
 
 Tips:
 
 - **Memory.** Give `tvm+compile` at least `mem: 8Gi` and `cpu: 4`, or the Job may be
   killed (exit code 137).
 - **Speed.** Untuned CPU code is slow: tune the model with MetaSchedule. The
-  `runtime-tvm` README explains how and lists all the task options.
+  `runtime-tvm` README explains how and lists all the run options.
 
 ## Versions
 
