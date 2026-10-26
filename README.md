@@ -127,7 +127,7 @@ builds and publishes the image. For each architecture, on a native runner, it:
 
 1. compiles Apache TVM `vX.Y.Z` with LLVM;
 2. copies the libraries and `python/tvm`, and applies the patches in `patches/`;
-3. writes `provenance.json` and builds the image, checking every import;
+3. writes `provenance.json` and builds the image, checking library hashes and imports;
 4. pushes `<tag>-<arch>`.
 
 A last job publishes the multi-architecture tag. To rebuild a release, run the workflow by
@@ -141,6 +141,7 @@ the build stops: an image without it would build fine and fail only at run time.
 | Patch                        | Why                                                                                       |
 | ---------------------------- | ----------------------------------------------------------------------------------------- |
 | `tflite-quantized-ops.patch` | Lets the TFLite importer convert full-integer quantized models (six operators and a fix). |
+| `tirx-parser-stack.patch` | Avoids unused source lookups during TIR parsing, reducing MetaSchedule worker startup time under emulation. |
 
 ## Related projects
 

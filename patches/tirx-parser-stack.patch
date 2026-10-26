@@ -1,0 +1,24 @@
+Avoid source lookups for stack frames whose source context is not used.
+Keep frame 2 unchanged for class-scope detection and retain all closure frames.
+
+--- a/tvm/tirx/script/parser/entry.py
++++ b/tvm/tirx/script/parser/entry.py
+@@ -61,7 +61,17 @@
+ 
+     # need to capture this var outside the wrapper because the wrapper
+     # adds to the stack
+-    outer_stack = inspect.stack()
++    # Only class-scope detection needs source context, from frame 2.
++    outer_stack = []
++    frame = inspect.currentframe()
++    while frame is not None:
++        if len(outer_stack) == 2:
++            info = inspect.getframeinfo(frame, context=1)
++            outer_stack.append(inspect.FrameInfo(frame, *info, positions=info.positions))
++        else:
++            outer_stack.append(inspect.FrameInfo(frame, frame.f_code.co_filename,
++                                                frame.f_lineno, frame.f_code.co_name, None, None))
++        frame = frame.f_back
+ 
+     def decorator_wrapper(func):
+         if not inspect.isfunction(func):
