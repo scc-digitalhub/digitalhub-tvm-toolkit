@@ -116,9 +116,9 @@ The toolkit neither installs nor calls the DigitalHub SDK.
 
 ## Versions
 
-**The image tag is the git tag, and it is the Apache TVM version**: tag `0.26.0` builds
-`tvm-toolkit:0.26.0` on Apache TVM `0.26.0`. Each architecture also gets its own tag,
-such as `0.26.0-amd64` and `0.26.0-arm64`.
+The image tag identifies a toolkit release. A manual release can publish
+`tvm-toolkit:0.26.0-r1` while keeping Apache TVM `0.26.0`. Each architecture also gets
+its own tag, such as `0.26.0-r1-amd64` and `0.26.0-r1-arm64`.
 
 | TVM      | apache-tvm-ffi | LLVM |
 | -------- | -------------- | ---- |
@@ -128,20 +128,42 @@ such as `0.26.0-amd64` and `0.26.0-arm64`.
 
 Compile and serve with the same TVM version **and commit**. The build record
 identifies the packaged libraries; `check_image.py` verifies their SHA-256 hashes,
-imports and native/cross linkers when building the image.
+imports and native/cross linkers when building the image. It also records the toolkit
+repository, source commit and image tag; `org.digitalhub.source.revision` labels the
+toolkit commit separately from the Apache TVM commit.
 
 ## Release
 
-Push a tag `X.Y.Z` (or `X.Y`): the GitHub Action `.github/workflows/tvm-toolkit-image.yml`
-builds and publishes the image. For each architecture, on a native runner, it:
+To publish the current toolkit from `main` with an unchanged Apache TVM version:
 
-1. compiles Apache TVM `vX.Y.Z` with LLVM;
+```bash
+gh workflow run tvm-toolkit-image.yml \
+  --repo scc-digitalhub/digitalhub-tvm-toolkit \
+  --ref main \
+  -f tvm_version=0.26.0 \
+  -f image_tag=0.26.0-r1
+```
+
+This command builds and publishes images to GHCR. Choose a new image tag to preserve
+previous releases. Manual releases require `main`, a TVM version `X.Y.Z` and a Docker
+image tag of at most 122 characters, leaving room for the architecture suffix.
+
+Pushing a Git tag `X.Y.Z` or `X.Y` still builds the matching Apache TVM release and
+uses that Git tag as the image tag (`0.26` selects TVM `0.26.0`). Neither path moves
+existing Git tags. A new TVM version needs its apache-tvm-ffi mapping in the workflow.
+
+For each architecture, on a native runner, the workflow:
+
+1. checks out the toolkit commit that triggered the run and compiles the selected Apache TVM release with LLVM;
 2. copies the libraries and `python/tvm`, and applies the patches in `patches/`;
 3. writes `provenance.json` and builds the image, checking library hashes and imports;
-4. pushes `<tag>-<arch>`.
+4. pushes `<tag>-<arch>` and saves its published digest.
 
-A last job publishes the multi-architecture tag. To rebuild a release, run the workflow by
-hand on its tag. A new TVM version first needs its apache-tvm-ffi release in the workflow.
+A last job checks the source commit and matching TVM/FFI labels, then publishes the
+multi-architecture tag from those exact digests. Failed architecture jobs can be retried;
+the final image is published only when both architectures succeed.
+To use a new release in CORE, update the three builder/compiler variables listed above
+or set `image` on the Run. Publishing an image does not change CORE's default.
 
 ## Patches
 
