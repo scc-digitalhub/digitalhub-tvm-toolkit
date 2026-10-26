@@ -1,7 +1,7 @@
 # DigitalHub TVM Toolkit
 
 The image **`ghcr.io/scc-digitalhub/tvm-toolkit`** contains [Apache TVM](https://tvm.apache.org/)
-and the tools around it. DigitalHub CORE (`runtime-tvm`) runs it for two tasks:
+and the tools around it. DigitalHub CORE (`runtime-tvm`) uses it for build and compile Runs:
 
 ```
 tvm+build     ONNX or TFLite model  ──►  Relax IR   (Model tvm-ir)
@@ -38,13 +38,9 @@ AMD64, ARM64 and ARM32 toolchains; `check_image.py` links an LLVM probe for each
 when building the image. These checks do not execute foreign code.
 `auto` uses the compile node's architecture. `amd64` means Intel/AMD 64-bit (x86-64-v2),
 `arm64` means ARM 64-bit (AArch64), and `arm32` requires ARMv7 hard-float with NEON.
-The older CORE names (`cpu`/`llvm`, `x86`, `x86_v3`, `x86_native`, `armv7l`) remain
-accepted aliases; LLVM triples and toolchain names have not changed. The toolkit has
-no ARM32 image: the ARM32 profile is cross-compiled from one of the two image variants.
-Both Go and Rust runtime image builds cover AMD64, ARM64 and ARMv7; ARM32 compilation
-and inference remain supported. Serving through CORE on an ARM32 node additionally
-requires an ARMv7-compatible init image: CORE's default init image covers only AMD64
-and ARM64. Running the compiler on ARM32 is separate and has no toolkit image.
+There is no ARM32 toolkit image. The `arm32` target is cross-compiled on AMD64 or
+ARM64 and can run with the matching Go/Rust ARMv7 image. CORE deployment on ARM32
+also needs a compatible init image; the default init image is AMD64/ARM64 only.
 
 ### Environment variables
 
@@ -68,43 +64,55 @@ and the serve images refuse a model built with another TVM version or commit.
 | `RUNTIME_TVM_BUILDER_TFLITE` | `tvm+build`, TFLite models |
 | `RUNTIME_TVM_COMPILER`       | `tvm+compile`              |
 
-A single run can also set `image`. Build conversion flags, compile targets and tuning
-are CORE **run** options, not reusable task settings. Tasks retain common resources,
-profiles, environment variables, secrets and volumes. CORE passes the run options
-to the scripts through environment variables.
+A Run can override `image`. Tasks hold common Kubernetes settings; TVM options are
+per-Run. For example, these are the contents of a compile Run's `spec`:
 
-### Configurable targets
+```yaml
+task: tvm+compile://my-project/<task-id>
+target_architecture: arm64
+optimization:
+  target_num_cores: 4
+tuning:
+  tuning_mode: "off"
+resources: {cpu: "4", mem: 8Gi}
+```
 
-CORE reads profiles from `runtime-tvm.yaml`: `target` contains standard TVM options
-as a YAML mapping; `linker.command` and `linker.options` configure the C++ linker.
-CORE converts the target to the same JSON consumed by the compile script, preserving
-lists and numbers. The toolkit does not duplicate this catalogue. A run can select
-a configured `target_architecture`, or pass an explicit standard LLVM `target` object.
+`profile` chooses the compile node; `target_architecture` chooses the Model's CPU
+preset. For conversion and tuning options, see the
+[CORE TVM reference](https://github.com/scc-digitalhub/digitalhub-core/tree/main/runtimes/runtime-tvm).
+Resource needs depend on the model and tuning parallelism; 4 CPUs and 8 GiB are a
+starting point for small models, not a guaranteed limit.
 
-`optimization.cross_cc` selects the compiler; `optimization.cross_cc_options` is an
-array of arguments such as `["--sysroot=/opt/sysroots/arm64"]`. Paths refer to the
-compile container. For another architecture, supply a compatible compile image with
-the required LLVM backend, toolchain and libraries. A new profile alone does not add
-those tools or a serving image.
+### Targets and linking
 
-CORE checks the toolchain by linking a small LLVM object before compiling the model.
-Local tuning and benchmarks require a compatible host architecture, ABI and CPU
-features; setting `cross_cc` alone does not disable them. MetaSchedule candidates and
-the final library use the same compiler options; RPC devices load the linked candidates.
-CUDA and other device backends are not part of this CPU pipeline.
+CORE owns the catalogue in `runtime-tvm.yaml`. Each preset separates `label`, a
+standard TVM `target` mapping, and `linker.command`/`linker.options`. Spring reads
+it; CORE supplies the selected target as JSON in `TVM_TARGET`. This image contains
+no duplicate target catalogue.
 
-Build and compile scripts call CORE directly over HTTP. CORE supplies signed upload
-URLs and selects the storage location; the scripts upload the files, register the
-Model and verify its run output. Large files use CORE's multipart upload endpoints.
-The image does not install or call the DigitalHub SDK. CORE authentication uses the
-Job's existing `DHCORE_*` environment variables; credentials are not forwarded to storage.
+A Run can instead provide an explicit LLVM `target`, with the preset omitted or
+set to `auto`. `optimization.cross_cc` chooses its linker;
+`optimization.cross_cc_options` passes separate arguments, such as
+`["--sysroot=/opt/sysroots/arm64"]`. Paths must exist inside the compile image.
+For presets, omitted options inherit the YAML linker arguments; `[]` clears them.
 
-Tips:
+`compile_model.py` resolves the target and links a small LLVM probe before building
+the Model. It uses `relax.build` and `export_library` for the final SO. MetaSchedule
+candidates use the same linker/options. Local tuning and benchmarks require a
+compatible host architecture, ABI and CPU features; `cross_cc` alone does not imply
+foreign execution. Otherwise use TVM RPC or apply an existing tuning database.
 
-- **Memory.** Give `tvm+compile` at least `mem: 8Gi` and `cpu: 4`, or the Job may be
-  killed (exit code 137).
-- **Speed.** Untuned CPU code is slow: tune the model with MetaSchedule. The
-  `runtime-tvm` README explains how and lists all the run options.
+Model metadata records the effective `target`, `target_triple`, `toolchain` and,
+when different, `target_requested`. Go/Rust consume that metadata. Adding a CPU
+preset does not supply a missing LLVM backend, toolchain/sysroot or runtime image.
+This integration is Linux CPU only; CUDA requires a separate implementation.
+
+### Artifact publication
+
+CORE mounts `publish.py` into the Job. It calls CORE directly over HTTP, obtains
+signed URLs, uploads files (including multipart uploads), registers the Model and
+verifies the Run output. The Job's `DHCORE_*` credentials are used only for CORE.
+The toolkit neither installs nor calls the DigitalHub SDK.
 
 ## Versions
 
@@ -118,7 +126,9 @@ such as `0.26.0-amd64` and `0.26.0-arm64`.
 | `0.25.x` | `0.1.12`       | 18   |
 | `0.26.x` | `0.1.13.post2` | 18   |
 
-Compile and serve with images of the same release.
+Compile and serve with the same TVM version **and commit**. The build record
+identifies the packaged libraries; `check_image.py` verifies their SHA-256 hashes,
+imports and native/cross linkers when building the image.
 
 ## Release
 
@@ -135,7 +145,7 @@ hand on its tag. A new TVM version first needs its apache-tvm-ffi release in the
 
 ## Patches
 
-The patches in `patches/` are applied to the TVM Python package. If one does not apply,
+These local compatibility/performance patches in `patches/` are applied to the TVM Python package. If one does not apply,
 the build stops: an image without it would build fine and fail only at run time.
 
 | Patch                        | Why                                                                                       |
