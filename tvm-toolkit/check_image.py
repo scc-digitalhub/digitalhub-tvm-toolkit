@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import importlib.metadata as md
 import json
 import os
@@ -16,6 +17,8 @@ assert tvm.__version__ == os.environ["TVM_VERSION"]
 assert md.version("apache-tvm-ffi") == os.environ["TVM_FFI_VERSION"]
 assert provenance["tvm_git_commit"] == os.environ["TVM_GIT_COMMIT"]
 assert provenance["tvm_ffi_git_commit"] == os.environ["TVM_FFI_GIT_COMMIT"]
+for library in Path("/opt/tvm/lib").glob("*.so"):
+    assert hashlib.sha256(library.read_bytes()).hexdigest() == provenance["libraries"][library.name], library.name
 
 loaded = {
     line.split()[-1]
