@@ -1,8 +1,5 @@
-# Builds the multi-arch image ghcr.io/scc-digitalhub/tvm-toolkit:<tag> (linux/amd64 and
-# linux/arm64) when a tag is pushed. The image tag is the git tag: 0.25 builds Apache TVM
-# 0.25.0, 0.26.0 builds 0.26.0. Each architecture compiles TVM natively on its own runner,
-# packages the stripped libraries and python/tvm (+ patches/) and pushes <tag>-<arch>; the
-# manifest job then publishes <tag>.
+# Builds native AMD64/ARM64 images, then publishes their digests as one image tag.
+# Manual releases from main choose the image tag independently of the TVM version.
 name: tvm-toolkit image
 
 on:
@@ -11,9 +8,20 @@ on:
       - "[0-9]+.[0-9]+"
       - "[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
+    inputs:
+      tvm_version:
+        description: Apache TVM version (X.Y.Z)
+        type: string
+        required: true
+        default: "0.26.0"
+      image_tag:
+        description: New image tag (e.g. 0.26.0-r1)
+        type: string
+        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.image_tag && format('refs/tags/{0}', inputs.image_tag) || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -37,14 +45,31 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       ffi: ${{ steps.v.outputs.ffi }}
     steps:
-      - name: Resolve versions from the tag
+      - name: Resolve image and TVM versions
         id: v
+        env:
+          INPUT_TVM_VERSION: ${{ inputs.tvm_version }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
-            echo "::error::run on a tag X.Y or X.Y.Z, got '$GITHUB_REF_NAME'"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "$GITHUB_REF" != refs/heads/main || ! "$INPUT_TVM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::manual releases require main and a TVM version X.Y.Z"
+              exit 1
+            fi
+            tvm="$INPUT_TVM_VERSION"
+            tag="$INPUT_IMAGE_TAG"
+          else
+            if [[ "$GITHUB_REF" != refs/tags/* || ! "$GITHUB_REF_NAME" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+              echo "::error::run on a tag X.Y or X.Y.Z"
+              exit 1
+            fi
+            tvm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[4]:-0}"
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ ! "$tag" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,121}$ ]]; then
+            echo "::error::image_tag must be a Docker tag of at most 122 characters"
             exit 1
           fi
-          tvm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[4]:-0}"
           # apache-tvm-ffi release bundled with each TVM version
           case "$tvm" in
             0.24.*) ffi=0.1.11 ;;
@@ -54,7 +79,7 @@ jobs:
           esac
           {
             echo "tvm=$tvm"
-            echo "tag=$GITHUB_REF_NAME"
+            echo "tag=$tag"
             echo "ffi=$ffi"
           } >> "$GITHUB_OUTPUT"
 
@@ -75,9 +100,13 @@ jobs:
     env:
       TVM_VERSION: ${{ needs.version.outputs.tvm }}
       TVM_FFI_VERSION: ${{ needs.version.outputs.ffi }}
+      IMAGE_TAG: ${{ needs.version.outputs.tag }}
+      ARCH: ${{ matrix.arch }}
       REF: ghcr.io/scc-digitalhub/tvm-toolkit:${{ needs.version.outputs.tag }}-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
       - name: Free disk space
         run: |
@@ -165,8 +194,6 @@ jobs:
           done
 
       - name: Write provenance.json
-        env:
-          ARCH: ${{ matrix.arch }}
         run: |
           python3 - <<'PY'
           import datetime
@@ -188,6 +215,9 @@ jobs:
               "tvm_ffi_version": os.environ["TVM_FFI_VERSION"],
               "tvm_ffi_git_commit": os.environ["TVM_FFI_GIT_COMMIT"],
               "llvm_version": os.environ["LLVM_VERSION"],
+              "source_repository": os.environ["GITHUB_REPOSITORY"],
+              "source_git_commit": os.environ["GITHUB_SHA"],
+              "image_tag": os.environ["IMAGE_TAG"],
               "source_dir": os.environ["TVM_SRC"],
               "build_run": run_url,
               # hashes of the stripped libraries actually shipped in the image
@@ -217,23 +247,47 @@ jobs:
             --build-arg "TVM_FFI_GIT_COMMIT=$TVM_FFI_GIT_COMMIT" \
             --build-arg "LLVM_VERSION=$LLVM_VERSION" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.digitalhub.source.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.description=$DESCRIPTION" \
             tvm-toolkit
           arch="$(docker image inspect -f '{{.Architecture}}' "$REF")"
-          if [ "$arch" != "${{ matrix.arch }}" ]; then
-            echo "::error::built $arch instead of ${{ matrix.arch }}"
+          if [ "$arch" != "$ARCH" ]; then
+            echo "::error::built $arch instead of $ARCH"
             exit 1
           fi
           docker run --rm "$REF" python3 -c "import tvm; print('tvm', tvm.__version__)"
 
       - name: Push image
-        run: docker push "$REF"
+        run: |
+          docker push "$REF"
+          docker image inspect "$REF" --format '{{json .RepoDigests}}' > repo-digests.json
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          pattern = re.escape(os.environ["IMAGE"]) + r"@sha256:[0-9a-f]{64}"
+          digests = {ref for ref in json.loads(Path("repo-digests.json").read_text()) if re.fullmatch(pattern, ref)}
+          assert len(digests) == 1, "Expected one published digest for this image"
+          Path("digests").mkdir(exist_ok=True)
+          Path("digests", os.environ["ARCH"] + ".txt").write_text(digests.pop() + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}.txt
+          if-no-files-found: error
+          overwrite: true
 
   manifest:
     needs: [version, build]
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ needs.version.outputs.tag }}
+      TVM_VERSION: ${{ needs.version.outputs.tvm }}
+      TVM_FFI_VERSION: ${{ needs.version.outputs.ffi }}
     steps:
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
@@ -244,24 +298,60 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-digest-*
+          path: digests
+          merge-multiple: true
+
       - name: Publish the multi-arch tag
         run: |
-          # both variants must carry the same TVM (labels are compared byte for byte)
+          refs=()
           for arch in amd64 arm64; do
-            docker buildx imagetools inspect "$IMAGE:$TAG-$arch" --format '{{json .Image.Config.Labels}}' > "labels-$arch.json"
+            ref="$(cat "digests/$arch.txt")"
+            digest="${ref#"$IMAGE@sha256:"}"
+            if [[ "$ref" != "$IMAGE@sha256:$digest" || ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::invalid image digest for $arch"
+              exit 1
+            fi
+            refs+=("$ref")
+            docker buildx imagetools inspect "$ref" --format '{{json .Image}}' > "image-$arch.json"
           done
-          if ! cmp labels-amd64.json labels-arm64.json; then
-            echo "::error::amd64 and arm64 images carry different TVM labels"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          expected = {
+              "org.opencontainers.image.source": os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"],
+              "org.opencontainers.image.version": os.environ["TVM_VERSION"],
+              "org.digitalhub.tvm-ffi.version": os.environ["TVM_FFI_VERSION"],
+              "org.digitalhub.source.revision": os.environ["GITHUB_SHA"],
+          }
+          revisions = set()
+          for arch in ("amd64", "arm64"):
+              image = json.loads(Path("image-" + arch + ".json").read_text())
+              assert (image.get("os"), image.get("architecture")) == ("linux", arch), arch
+              labels = image.get("config", {}).get("Labels", {})
+              for key, value in expected.items():
+                  assert labels.get(key) == value, key
+              commits = (labels.get("org.opencontainers.image.revision", ""),
+                         labels.get("org.digitalhub.tvm-ffi.revision", ""))
+              assert all(re.fullmatch(r"[0-9a-f]{40}", commit) for commit in commits), arch
+              revisions.add(commits)
+          assert len(revisions) == 1, "Images carry different TVM/FFI commits"
+          PY
           docker buildx imagetools create -t "$IMAGE:$TAG" \
             --annotation "index:org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --annotation "index:org.opencontainers.image.description=$DESCRIPTION" \
-            "$IMAGE:$TAG-amd64" "$IMAGE:$TAG-arm64"
+            --annotation "index:org.digitalhub.source.revision=$GITHUB_SHA" \
+            "${refs[@]}"
           docker buildx imagetools inspect --raw "$IMAGE:$TAG" > index.json
           python3 - index.json <<'PY'
           import json
           import sys
+          from pathlib import Path
 
           index = json.load(open(sys.argv[1]))
           platforms = sorted(
@@ -270,6 +360,11 @@ jobs:
               if m.get("platform", {}).get("os") != "unknown"
           )
           print("platforms:", platforms)
+          expected = {arch: Path("digests", arch + ".txt").read_text().strip().split("@", 1)[1]
+                      for arch in ("amd64", "arm64")}
+          actual = {m["platform"]["architecture"]: m["digest"] for m in index.get("manifests", [])
+                    if m.get("platform", {}).get("os") == "linux"}
+          assert actual == expected, "Published index does not match the architecture digests"
           sys.exit(0 if platforms == ["linux/amd64", "linux/arm64"] else 1)
           PY
           {
