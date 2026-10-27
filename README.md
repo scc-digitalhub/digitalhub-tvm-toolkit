@@ -86,12 +86,14 @@ starting point for small models, not a guaranteed limit.
 ### Targets and linking
 
 CORE owns the catalogue in `runtime-tvm.yaml`. Each preset separates `label`, a
-standard TVM `target` mapping, and `linker.command`/`linker.options`. Spring reads
-it; CORE supplies the selected target as JSON in `TVM_TARGET`. This image contains
-no duplicate target catalogue.
+standard TVM `target` encoded as a JSON string, and `linker.command`/`linker.options`.
+The shared YAML reader loads it; CORE supplies the selected JSON in `TVM_TARGET`.
+JSON preserves arrays, numbers and nested options. This image contains no duplicate
+target catalogue.
 
-A Run can instead provide an explicit LLVM `target`, with the preset omitted or
-set to `auto`. `optimization.cross_cc` chooses its linker;
+A Run can instead provide an explicit LLVM `target` object, with the preset omitted
+or set to `auto`. Only the YAML catalogue uses a JSON string.
+`optimization.cross_cc` chooses its linker;
 `optimization.cross_cc_options` passes separate arguments, such as
 `["--sysroot=/opt/sysroots/arm64"]`. Paths must exist inside the compile image.
 For presets, omitted options inherit the YAML linker arguments; `[]` clears them.
