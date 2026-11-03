@@ -37,6 +37,21 @@ import xgboost
 import requests
 from tvm.relax.frontend.tflite import from_tflite
 
+from onnx import TensorProto, helper
+
+onnx_probe = helper.make_model(
+    helper.make_graph(
+        [helper.make_node("Identity", ["x"], ["y"])],
+        "simplifier_probe",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 4])],
+    ),
+    opset_imports=[helper.make_opsetid("", 17)],
+)
+simplified_probe, valid = onnxsim.simplify(onnx_probe)
+assert valid and simplified_probe.ir_version == onnx.IR_VERSION
+print("ONNX simplification ok: IR", onnx_probe.ir_version)
+
 assert tvm.get_global_func("tvm.contrib.random.random_fill_for_measure", allow_missing=True)
 assert md.packages_distributions().get("digitalhub") is None
 print("onnx+onnxsim+tflite+metaschedule+http ok; no DigitalHub SDK")
