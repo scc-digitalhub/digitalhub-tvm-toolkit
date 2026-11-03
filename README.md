@@ -56,9 +56,9 @@ and the serve images refuse a model built with another TVM version or commit.
 
 ## Use from DigitalHub CORE
 
-Use `ghcr.io/scc-digitalhub/tvm-toolkit:0.26.0-r1` for the TVM 0.26.0
-toolkit revision used in the runtime tests. The configured default depends on
-the CORE release. To select the image explicitly, set these variables on CORE:
+Use `ghcr.io/scc-digitalhub/tvm-toolkit:0.26.0-r2` for the current TVM 0.26.0
+toolkit release. The configured default depends on the CORE release. To select
+the image explicitly, set these variables on CORE:
 
 | Variable                     | Used by                    |
 | ---------------------------- | -------------------------- |
@@ -118,16 +118,30 @@ This integration is Linux CPU only; CUDA requires a separate implementation.
 
 ### Artifact publication
 
-CORE mounts `publish.py` into the Job. It calls CORE directly over HTTP, obtains
-signed URLs, uploads files (including multipart uploads), registers the Model and
-verifies the Run output. The Job's `DHCORE_*` credentials are used only for CORE.
-The toolkit neither installs nor calls the DigitalHub SDK.
+CORE mounts `publish.py` into the Job. It uses `requests` for direct CORE HTTP calls
+and signed storage uploads, including multipart uploads. The Job's `DHCORE_*`
+credentials are used only for CORE. The toolkit has no DigitalHub SDK dependency.
+
+A CORE build containing the publisher update in
+[PR #254](https://github.com/scc-digitalhub/digitalhub-core/pull/254) follows this lifecycle:
+
+1. Register the Model in `CREATED` with its storage path, then set it to `UPLOADING`.
+2. Upload each artifact and retrieve its file information. Store up to 100 file
+   records in `status.files`; larger sets use CORE's external file index with an
+   empty `status.files`.
+3. Mark the Model `READY`, then write and verify the Run output: `ir_module` for
+   build or `compiled_so` for compile.
+
+Upload or file-indexing failures attempt to mark the Model `ERROR`. A Run-output
+failure leaves the Model `READY` and reports an error. This lifecycle requires a
+CORE build containing the publisher update; changing the toolkit image alone does
+not update the mounted scripts.
 
 ## Versions
 
-The image tag identifies a toolkit release. A manual release can publish
-`tvm-toolkit:0.26.0-r1` while keeping Apache TVM `0.26.0`. Each architecture also gets
-its own tag, such as `0.26.0-r1-amd64` and `0.26.0-r1-arm64`.
+The image tag identifies a toolkit release: `tvm-toolkit:0.26.0-r2` packages Apache
+TVM `0.26.0`. Each architecture also gets its own tag, such as `0.26.0-r2-amd64` and
+`0.26.0-r2-arm64`. A new toolkit revision can keep the same Apache TVM version.
 
 | TVM      | apache-tvm-ffi | LLVM |
 | -------- | -------------- | ---- |
@@ -150,11 +164,11 @@ gh workflow run tvm-toolkit-image.yml \
   --repo scc-digitalhub/digitalhub-tvm-toolkit \
   --ref main \
   -f tvm_version=0.26.0 \
-  -f image_tag=0.26.0-r1
+  -f image_tag='<new-image-tag>'
 ```
 
-This command builds and publishes images to GHCR. Choose a new image tag to preserve
-previous releases. Manual releases require `main`, a TVM version `X.Y.Z` and a Docker
+Replace `<new-image-tag>` with an unused tag. This command builds and publishes
+images to GHCR. Manual releases require `main`, a TVM version `X.Y.Z` and a Docker
 image tag of at most 122 characters, leaving room for the architecture suffix.
 
 Pushing a Git tag `X.Y.Z` or `X.Y` still builds the matching Apache TVM release and
