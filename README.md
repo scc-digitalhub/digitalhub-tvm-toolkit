@@ -56,13 +56,20 @@ and the serve images refuse a model built with another TVM version or commit.
 
 ## Use from DigitalHub CORE
 
-`runtime-tvm` uses `tvm-toolkit:0.26.0` by default. To use another image, set on CORE:
+Use `ghcr.io/scc-digitalhub/tvm-toolkit:0.26.0-r1` for the TVM 0.26.0
+toolkit revision used in the runtime tests. The configured default depends on
+the CORE release. To select the image explicitly, set these variables on CORE:
 
 | Variable                     | Used by                    |
 | ---------------------------- | -------------------------- |
 | `RUNTIME_TVM_BUILDER_ONNX`   | `tvm+build`, ONNX models   |
 | `RUNTIME_TVM_BUILDER_TFLITE` | `tvm+build`, TFLite models |
 | `RUNTIME_TVM_COMPILER`       | `tvm+compile`              |
+
+Update the Go/Rust serving image to receive request-validation fixes. Existing
+valid models can be reused when the runtime uses the same TVM version and commit
+and the model's target, metadata and datatypes remain compatible. These serving
+fixes do not require a new toolkit image.
 
 A Run can override `image`. Tasks hold common Kubernetes settings; TVM options are
 per-Run. For example, these are the contents of a compile Run's `spec`:

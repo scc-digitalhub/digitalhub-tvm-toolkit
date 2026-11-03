@@ -47,8 +47,9 @@ ENV LD_LIBRARY_PATH=/opt/tvm/lib \
 # (xgboost cost model, cloudpickle and psutil for the builder workers, scipy) and the
 # HTTP client that publishes the Models. The tvm-ffi wheel is then rewired to the
 # libtvm_ffi.so of this TVM build, and every import is checked before the image is done.
+# Keep ONNX and its simplifier on an IR-compatible pair.
 RUN pip3 install --no-cache-dir --break-system-packages \
-        apache-tvm-ffi==${TVM_FFI_VERSION} tflite onnx onnxsim==0.7.3 ml_dtypes numpy typing_extensions \
+        apache-tvm-ffi==${TVM_FFI_VERSION} tflite onnx==1.23.2 onnxsim==0.8.1 ml_dtypes numpy typing_extensions \
         cloudpickle psutil scipy xgboost-cpu \
         requests \
     && FFI_LIB="$(python3 -c 'import importlib.util, pathlib; print(pathlib.Path(importlib.util.find_spec("tvm_ffi").origin).parent / "lib/libtvm_ffi.so")')" \
