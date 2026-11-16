@@ -1,0 +1,73 @@
+# An opt-in validation build. It never logs in to a registry or publishes images.
+name: tvm-toolkit CUDA validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      IMAGE: local/tvm-toolkit:0.26.0-cuda13.2.1-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build CUDA variant without a GPU
+        run: |
+          docker build -f tvm-toolkit/Dockerfile.cuda \
+            --build-arg TVM_CUDA_BUILD_JOBS=2 \
+            --build-arg "TVM_TOOLKIT_CUDA_SOURCE_REVISION=$GITHUB_SHA" \
+            --label "org.digitalhub.source.revision=$GITHUB_SHA" \
+            -t "$IMAGE" tvm-toolkit
+          test "$(docker image inspect -f '{{.Architecture}}' "$IMAGE")" = '${{ matrix.arch }}'
+
+      - name: Check CPU toolchains with the normal loader path
+        run: docker run --rm --network none "$IMAGE" python3 /opt/tvm/check_image.py
+
+      - name: Compile and export CUDA add and matmul with explicit driver stub opt-in
+        run: |
+          docker run --rm --network none \
+            -e LD_LIBRARY_PATH=/opt/tvm/cuda-driver-stubs:/opt/tvm/lib:/usr/local/cuda/lib64 \
+            "$IMAGE" python3 /opt/tvm/check_cuda.py --require-no-gpu
+
+      - name: Collect build evidence
+        run: |
+          mkdir evidence
+          docker run --rm --network none "$IMAGE" cat /opt/tvm/provenance.json > evidence/provenance.json
+          docker run --rm --network none "$IMAGE" cat /opt/tvm/cuda-CMakeCache.txt > evidence/cuda-CMakeCache.txt
+          {
+            echo "Built and checked $IMAGE locally on ${{ matrix.arch }}; nothing was published."
+            echo "CUDA sm_87 add/matmul were compiled and exported for LLVM AMD64 and ARM64 hosts."
+            echo "NVIDIA hardware execution, numerical validation, performance, and Jetson qualification: NOT_RUN."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cuda-build-evidence-${{ matrix.arch }}
+          path: evidence/
+          if-no-files-found: error

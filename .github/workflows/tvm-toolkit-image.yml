@@ -70,6 +70,10 @@ jobs:
             echo "::error::image_tag must be a Docker tag of at most 122 characters"
             exit 1
           fi
+          if [[ "${tag,,}" == *cuda* ]]; then
+            echo "::error::CPU publication cannot use a CUDA image tag"
+            exit 1
+          fi
           # apache-tvm-ffi release bundled with each TVM version
           case "$tvm" in
             0.24.*) ffi=0.1.11 ;;
@@ -169,7 +173,7 @@ jobs:
         run: |
           ctx="$GITHUB_WORKSPACE/tvm-toolkit"
           lib="$TVM_SRC/build/lib"
-          rm -rf "$ctx/lib" "$ctx/python" "$ctx/provenance.json"
+          rm -rf "$ctx/lib" "$ctx/python" "$ctx/include" "$ctx/provenance.json"
           mkdir -p "$ctx/lib" "$ctx/python"
           for so in libtvm_runtime.so libtvm_runtime_extra.so libtvm_ffi.so libtvm_compiler.so; do
             if [ ! -f "$lib/$so" ]; then
@@ -183,6 +187,7 @@ jobs:
             strip --strip-debug "$ctx/lib/$so"
           done
           cp -r "$TVM_SRC/python/tvm" "$ctx/python/tvm"
+          cp -r "$TVM_SRC/include" "$ctx/include"
           # setuptools_scm writes this when building a wheel; we ship the source tree
           printf 'version = "%s"\n' "$TVM_VERSION" > "$ctx/python/tvm/_version.py"
           find "$ctx/python" -name __pycache__ -type d -prune -exec rm -rf {} +
@@ -259,6 +264,7 @@ jobs:
 
       - name: Push image
         run: |
+          python3 check-image-tag.py "$REF"
           docker push "$REF"
           docker image inspect "$REF" --format '{{json .RepoDigests}}' > repo-digests.json
           python3 - <<'PY'
@@ -289,6 +295,9 @@ jobs:
       TVM_VERSION: ${{ needs.version.outputs.tvm }}
       TVM_FFI_VERSION: ${{ needs.version.outputs.ffi }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
@@ -342,6 +351,7 @@ jobs:
               revisions.add(commits)
           assert len(revisions) == 1, "Images carry different TVM/FFI commits"
           PY
+          python3 check-image-tag.py "$IMAGE:$TAG"
           docker buildx imagetools create -t "$IMAGE:$TAG" \
             --annotation "index:org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --annotation "index:org.opencontainers.image.description=$DESCRIPTION" \

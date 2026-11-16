@@ -1,2 +1,5 @@
 tvm-toolkit/lib/
 tvm-toolkit/python/
+tvm-toolkit/include/
+.cuda-build/
+__pycache__/

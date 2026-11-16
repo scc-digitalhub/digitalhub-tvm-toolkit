@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: © 2025 DSLab - Fondazione Bruno Kessler
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# This separate variant preserves the CPU toolkit's compiler, Python patches,
+# cross-compilers and attested TVM/FFI libraries. Only the upstream CUDA runtime
+# sidecar and NVIDIA's minimal compiler/runtime packages are added.
+ARG TOOLKIT_IMAGE=ghcr.io/scc-digitalhub/tvm-toolkit:0.26.0-r2@sha256:245516207535f6393d0bb0a156b7e2ec3cdad78eafbed65434b0c197203a1084
+FROM ${TOOLKIT_IMAGE} AS cuda
+COPY install_cuda.sh /tmp/install_cuda.sh
+RUN bash /tmp/install_cuda.sh && rm /tmp/install_cuda.sh
+ENV CUDA_PATH=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:${PATH} \
+    LD_LIBRARY_PATH=/opt/tvm/lib:/usr/local/cuda/lib64 \
+    TVM_CUDA_COMPILE_MODE=nvcc \
+    TVM_CUDA_NVCC_NO_FAST_MATH=1 \
+    TVM_CUDA_VERSION=13.2.1
+
+FROM cuda AS cuda-build
+ARG TVM_CUDA_BUILD_JOBS=2
+# CUDA modules are runtime plugins in this TVM revision; the existing compiler
+# discovers the sidecar through the FFI registry. LLVM is already in the base.
+RUN apt-get update && apt-get install -y --no-install-recommends cmake ninja-build git \
+    && rm -rf /var/lib/apt/lists/*
+COPY build_cuda_runtime.sh /tmp/build_cuda_runtime.sh
+RUN bash /tmp/build_cuda_runtime.sh
+
+FROM cuda
+ARG TOOLKIT_IMAGE
+ARG TVM_TOOLKIT_CUDA_SOURCE_REVISION=unknown
+ENV TVM_TOOLKIT_BASE_IMAGE=${TOOLKIT_IMAGE} \
+    TVM_TOOLKIT_CUDA_SOURCE_REVISION=${TVM_TOOLKIT_CUDA_SOURCE_REVISION}
+LABEL org.digitalhub.tvm.backends="cpu,cuda" \
+    org.digitalhub.cuda.version="13.2.1" \
+    org.digitalhub.source.revision="${TVM_TOOLKIT_CUDA_SOURCE_REVISION}" \
+    org.digitalhub.tvm-toolkit.base="${TOOLKIT_IMAGE}"
+COPY --from=cuda-build /stage/libtvm_runtime_cuda.so /opt/tvm/lib/
+COPY --from=cuda-build /stage/cuda-build-provenance.json /opt/tvm/
+COPY --from=cuda-build /stage/cuda-CMakeCache.txt /opt/tvm/
+COPY --from=cuda-build /src/tvm/include/ /opt/tvm/include/
+COPY check_image.py check_cuda.py finalize_cuda_provenance.py /opt/tvm/
+# Match NVIDIA's driver discovery/capability contract for real GPU runs. Keep
+# this in the final stage so changes do not rebuild the upstream runtime.
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/opt/tvm/lib:/usr/local/cuda/lib64 \
+    PATH=/usr/local/nvidia/bin:${PATH} \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+RUN pip3 install --no-cache-dir --break-system-packages onnx-ir==1.1.0 \
+    && python3 /opt/tvm/finalize_cuda_provenance.py \
+    && python3 /opt/tvm/check_image.py \
+    && LD_LIBRARY_PATH=/opt/tvm/cuda-driver-stubs:/opt/tvm/lib:/usr/local/cuda/lib64 \
+       python3 /opt/tvm/check_cuda.py --require-no-gpu
