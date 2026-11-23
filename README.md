@@ -147,14 +147,8 @@ The image attests `compiled_backends` as
 commits, effective CUDA CMake cache and installed CUDA package versions. The
 sidecar is checked against the inherited runtime and FFI libraries.
 
-Compilation without a GPU requires an explicit opt-in to NVIDIA's driver stub:
-
-```bash
-docker run --rm --network none \
-  -e LD_LIBRARY_PATH=/opt/tvm/cuda-driver-stubs:/opt/tvm/lib:/usr/local/cuda/lib64 \
-  local/tvm-toolkit:0.26.0-cuda13.2.1-amd64 \
-  python3 /opt/tvm/check_cuda.py --require-no-gpu
-```
+Compilation without a GPU requires an explicit opt-in to NVIDIA's driver stub
+through `LD_LIBRARY_PATH`.
 
 The stub is isolated in `/opt/tvm/cuda-driver-stubs/libcuda.so.1` and is absent
 from the default loader path. Keep that path out of GPU execution environments
@@ -173,7 +167,8 @@ The manual-only `tvm-toolkit-cuda.yml` workflow builds and checks both native ho
 architectures and uploads build evidence. It has no registry publishing steps.
 CUDA toolkit images have no published release tag yet. Jetson Orin `sm_87` with
 JetPack 7.2 / L4T 39.2 / Ubuntu 24.04 / CUDA 13.2.1 is the intended hardware
-baseline; hardware execution, numerics and performance remain **NOT_RUN**. NVIDIA's
+baseline; hardware execution, numerics and performance require validation on the
+target device. NVIDIA's
 [JetPack 7.2 release information](https://developer.nvidia.com/embedded/jetpack/downloads/archive-7.2)
 lists that vendor stack. See also the
 [CUDA 13.2.1 image definitions](https://gitlab.com/nvidia/container-images/cuda/-/tree/master/dist/13.2.1/ubuntu2404).
