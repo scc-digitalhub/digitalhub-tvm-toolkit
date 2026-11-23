@@ -1,15 +1,63 @@
-# An opt-in validation build. It never logs in to a registry or publishes images.
-name: tvm-toolkit CUDA validation
+# Builds the exact source release selected by the TVM release workflow.
+name: tvm-toolkit cuda build
 
 on:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
+      image_tag:
+        type: string
+        required: true
+      tvm_version:
+        type: string
+        required: true
+      ffi_version:
+        type: string
+        required: true
+      tvm_commit:
+        type: string
+        required: true
+      ffi_commit:
+        type: string
+        required: true
+      publish:
+        type: boolean
+        default: false
+      manifest_run_id:
+        type: string
+        default: ''
+      cpu_image:
+        type: string
+        required: true
+    outputs:
+      image_ref:
+        description: Verified multi-architecture image digest
+        value: ${{ jobs.manifest.outputs.image_ref }}
 
 permissions:
   contents: read
+  packages: write
+  actions: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/scc-digitalhub/tvm-toolkit
+  LLVM_VERSION: "18"
+  # shown by GitHub Packages; source links the package to this repository
+  DESCRIPTION: "Apache TVM toolkit for DigitalHub tvm+build and tvm+compile (TVM runtime and compiler, LLVM codegen, cross-compilers)"
+  RELEASE_VERSION: ${{ inputs.release_tag }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
+  TVM_VERSION: ${{ inputs.tvm_version }}
+  TVM_FFI_VERSION: ${{ inputs.ffi_version }}
+  TVM_GIT_COMMIT: ${{ inputs.tvm_commit }}
+  TVM_FFI_GIT_COMMIT: ${{ inputs.ffi_commit }}
+  EXPECTED_TVM_COMMIT: ${{ inputs.tvm_commit }}
+  EXPECTED_FFI_COMMIT: ${{ inputs.ffi_commit }}
 
 defaults:
   run:
@@ -17,6 +65,7 @@ defaults:
 
 jobs:
   build:
+    if: inputs.manifest_run_id == ''
     strategy:
       fail-fast: false
       matrix:
@@ -28,46 +77,126 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
-      IMAGE: local/tvm-toolkit:0.26.0-cuda13.2.1-${{ matrix.arch }}
+      REF: ghcr.io/scc-digitalhub/tvm-toolkit:${{ inputs.image_tag }}-${{ matrix.arch }}
+      CPU_IMAGE: ${{ inputs.cpu_image }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: docker/login-action@v3
+        if: inputs.publish
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
-
-      - name: Build CUDA variant without a GPU
+      - name: Verify the CPU base belongs to the same source release
+        run: |
+          if [[ ! "$CPU_IMAGE" =~ ^ghcr.io/scc-digitalhub/tvm-toolkit@sha256:[0-9a-f]{64}$ ]]; then
+            echo "CPU base must be an exact toolkit digest" >&2
+            exit 1
+          fi
+          docker pull "$CPU_IMAGE"
+          docker image inspect "$CPU_IMAGE" --format '{{json .Config.Labels}}' > cpu-labels.json
+          python3 - <<'PY'
+          import json
+          import os
+          labels = json.load(open('cpu-labels.json'))
+          expected = {
+              'org.digitalhub.release.version': os.environ['RELEASE_VERSION'],
+              'org.digitalhub.source.revision': os.environ['SOURCE_SHA'],
+              'org.opencontainers.image.version': os.environ['TVM_VERSION'],
+              'org.opencontainers.image.revision': os.environ['TVM_GIT_COMMIT'],
+              'org.digitalhub.tvm-ffi.revision': os.environ['TVM_FFI_GIT_COMMIT'],
+          }
+          for key, value in expected.items():
+              if labels.get(key) != value:
+                  raise SystemExit('CPU base mismatch: ' + key)
+          if labels.get('org.digitalhub.cuda.version'):
+              raise SystemExit('Expected a CPU base without CUDA')
+          PY
+      - name: Build and verify CUDA toolkit without a GPU
         run: |
           docker build -f tvm-toolkit/Dockerfile.cuda \
+            --build-arg "TOOLKIT_IMAGE=$CPU_IMAGE" \
             --build-arg TVM_CUDA_BUILD_JOBS=2 \
-            --build-arg "TVM_TOOLKIT_CUDA_SOURCE_REVISION=$GITHUB_SHA" \
-            --label "org.digitalhub.source.revision=$GITHUB_SHA" \
-            -t "$IMAGE" tvm-toolkit
-          test "$(docker image inspect -f '{{.Architecture}}' "$IMAGE")" = '${{ matrix.arch }}'
-
-      - name: Check CPU toolchains with the normal loader path
-        run: docker run --rm --network none "$IMAGE" python3 /opt/tvm/check_image.py
-
-      - name: Compile and export CUDA add and matmul with explicit driver stub opt-in
-        run: |
+            --build-arg "TVM_TOOLKIT_CUDA_SOURCE_REVISION=$SOURCE_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.digitalhub.source.revision=$SOURCE_SHA" \
+            --label "org.digitalhub.release.version=$RELEASE_VERSION" \
+            --label "org.digitalhub.build.revision=$GITHUB_SHA" \
+            -t "$REF" tvm-toolkit
+          test "$(docker image inspect -f '{{.Architecture}}' "$REF")" = "$ARCH"
+          docker run --rm --network none "$REF" python3 /opt/tvm/check_image.py
           docker run --rm --network none \
             -e LD_LIBRARY_PATH=/opt/tvm/cuda-driver-stubs:/opt/tvm/lib:/usr/local/cuda/lib64 \
-            "$IMAGE" python3 /opt/tvm/check_cuda.py --require-no-gpu
-
-      - name: Collect build evidence
+            "$REF" python3 /opt/tvm/check_cuda.py --require-no-gpu
+      - name: Collect build provenance
         run: |
           mkdir evidence
-          docker run --rm --network none "$IMAGE" cat /opt/tvm/provenance.json > evidence/provenance.json
-          docker run --rm --network none "$IMAGE" cat /opt/tvm/cuda-CMakeCache.txt > evidence/cuda-CMakeCache.txt
-          {
-            echo "Built and checked $IMAGE locally on ${{ matrix.arch }}; nothing was published."
-            echo "CUDA sm_87 add/matmul were compiled and exported for LLVM AMD64 and ARM64 hosts."
-            echo "NVIDIA hardware execution, numerical validation, performance, and Jetson qualification: NOT_RUN."
-          } >> "$GITHUB_STEP_SUMMARY"
-
+          docker run --rm --network none "$REF" cat /opt/tvm/provenance.json > evidence/provenance.json
+          docker run --rm --network none "$REF" cat /opt/tvm/cuda-CMakeCache.txt > evidence/cuda-CMakeCache.txt
+          echo 'NVIDIA hardware execution, GPU accuracy, performance and Jetson qualification: NOT_RUN.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: cuda-build-evidence-${{ matrix.arch }}
           path: evidence/
           if-no-files-found: error
+      - name: Push validated image and save its digest
+        if: inputs.publish
+        run: |
+          python3 check-image-tag.py "$REF"
+          docker push "$REF"
+          docker image inspect "$REF" --format '{{json .RepoDigests}}' > repo-digests.json
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          pattern = re.escape(os.environ['IMAGE']) + r'@sha256:[0-9a-f]{64}'
+          refs = {value for value in json.load(open('repo-digests.json')) if re.fullmatch(pattern, value)}
+          if len(refs) != 1:
+              raise SystemExit('Expected one published digest')
+          Path('digests').mkdir(exist_ok=True)
+          Path('digests', os.environ['ARCH'] + '.txt').write_text(refs.pop() + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: inputs.publish
+        with:
+          name: cuda-image-digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  manifest:
+    needs: build
+    if: ${{ always() && inputs.publish && (needs.build.result == 'success' || inputs.manifest_run_id != '') }}
+    runs-on: ubuntu-24.04
+    outputs:
+      image_ref: ${{ steps.publish.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cuda-image-digest-*
+          path: digests
+          merge-multiple: true
+          run-id: ${{ inputs.manifest_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify and publish exact image digests
+        id: publish
+        run: |
+          python3 release-images.py manifest --release "$RELEASE_VERSION" \
+            --source-sha "$SOURCE_SHA" --backend cuda --image "$IMAGE" \
+            --tag "$IMAGE_TAG" --architectures amd64,arm64 --publish

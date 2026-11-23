@@ -220,9 +220,10 @@ not update the mounted scripts.
 
 ## Versions
 
-The image tag identifies a toolkit release: `tvm-toolkit:0.26.0-r2` packages Apache
-TVM `0.26.0`. Each architecture also gets its own tag, such as `0.26.0-r2-amd64` and
-`0.26.0-r2-arm64`. A new toolkit revision can keep the same Apache TVM version.
+Image tags include the project release and Apache TVM version, for example
+`tvm-toolkit:0.16.1-tvm0.26.0`. Each architecture also gets its own tag, with an
+`-amd64` or `-arm64` suffix. A new toolkit release can keep the same TVM version.
+Previously published tags such as `0.26.0-r2` remain unchanged.
 
 | TVM      | apache-tvm-ffi | LLVM |
 | -------- | -------------- | ---- |
@@ -238,27 +239,23 @@ toolkit commit separately from the Apache TVM commit.
 
 ## Release
 
-To publish the current toolkit from `main` with an unchanged Apache TVM version:
+Push a project release tag `X.Y.Z` to build CPU and CUDA images automatically.
+To publish an existing source tag using the release workflow on `main`:
 
 ```bash
 gh workflow run tvm-toolkit-image.yml \
   --repo scc-digitalhub/digitalhub-tvm-toolkit \
   --ref main \
-  -f tvm_version=0.26.0 \
-  -f image_tag='<new-image-tag>'
+  -f release_tag=0.16.1 -f publish=true
 ```
 
-Replace `<new-image-tag>` with an unused tag. This command builds and publishes
-images to GHCR. Manual releases require `main`, a TVM version `X.Y.Z` and a Docker
-image tag of at most 122 characters, leaving room for the architecture suffix.
-
-Pushing a Git tag `X.Y.Z` or `X.Y` still builds the matching Apache TVM release and
-uses that Git tag as the image tag (`0.26` selects TVM `0.26.0`). Neither path moves
-existing Git tags. A new TVM version needs its apache-tvm-ffi mapping in the workflow.
+The source tag must include `release-images.json`, which pins TVM and TVM-FFI.
+Existing image tags are rejected. See [Project releases and image tags](#project-releases-and-image-tags)
+for naming, validation and manifest recovery.
 
 For each architecture, on a native runner, the workflow:
 
-1. checks out the toolkit commit that triggered the run and compiles the selected Apache TVM release with LLVM;
+1. checks out the tagged toolkit commit and compiles the pinned Apache TVM release with LLVM;
 2. copies the libraries, C headers and `python/tvm`, and applies the patches in `patches/`;
 3. writes `provenance.json` and builds the image, checking library hashes and imports;
 4. pushes `<tag>-<arch>` and saves its published digest.
@@ -324,5 +321,57 @@ Local CPU builds retain a separate build context, printed by `build-image.sh`;
 `TVM_BUILD_CONTEXT` can select a new directory. Existing repository artifacts are
 preserved. CPU publishing rejects CUDA tags. Publication checks every architecture
 and manifest tag and refuses existing tags or ambiguous registry errors. Select a
-new release tag when publishing rebuilt sources. The CUDA toolkit workflow remains
-validation-only.
+new release tag when publishing rebuilt sources. CUDA publication uses the CPU
+image from the same release as its base.
+
+## Project releases and image tags
+
+A project Git tag such as `0.16.1` identifies this repository's source release.
+It is independent of Apache TVM (`0.26.0`) and CUDA (`13.2.1`). The supported
+TVM/FFI commits and dependency versions are recorded in `release-images.json`.
+Changing CUDA requires updating and validating its pinned build recipes as well.
+
+Pushing a project tag `X.Y.Z` starts `tvm-toolkit-image.yml`. It builds CPU and CUDA
+images from the exact source tag and generates these tags automatically:
+
+```text
+ghcr.io/scc-digitalhub/tvm-toolkit:0.16.1-tvm0.26.0
+ghcr.io/scc-digitalhub/tvm-toolkit:0.16.1-tvm0.26.0-cuda13.2.1
+```
+
+Each tag is a multi-architecture index. Individual images have `-amd64` and
+`-arm64` suffixes. The toolkit runs on AMD64 and ARM64 hosts; its cross-compilers target other CPU architectures.
+CUDA images remain separate from CPU images. GPU execution, accuracy and Jetson
+qualification require hardware and are not certified by hosted CI runners.
+
+The image labels and provenance distinguish the project release, its source
+commit, the build-recipe commit and the upstream TVM/FFI revisions. Existing
+image tags cannot be overwritten. Updating these images does not change CORE's
+configured image references automatically.
+
+The same workflow supports manual execution for a source tag containing its
+dependency configuration:
+
+```bash
+gh workflow run tvm-toolkit-image.yml --ref main \
+  -f release_tag=0.16.1 -f publish=true
+```
+
+The workflow recipe is taken from the selected ref; the source is resolved from
+`release_tag`. Publication requires that tag to exist and be an ancestor of the
+workflow commit. On a validation branch, `publish=false` builds without pushing;
+a release tag that does not yet exist resolves to that branch commit for validation
+only. No release tag or GitHub Release is created automatically.
+
+To recover a failed manifest, run the updated workflow with the original source
+tag and `manifest_run_id=<previous run ID>`. The build jobs are skipped. Only
+digest artifacts whose platform, release, source commit and TVM/FFI versions match
+are accepted. A matching existing index is reused; a different index is rejected.
+This supports recovery without deleting images or rebuilding successful binaries.
+CPU and CUDA artifacts have separate names.
+
+The CUDA release waits for the CPU index and uses its exact digest as the base.
+It checks the base's release, source commit and dependency revisions before
+building. Non-publishing validation does not transfer large CPU images between
+runners, so the dependent CUDA job is skipped in that mode. The publishing release
+runs both CPU and CUDA checks before publishing their respective indexes.
