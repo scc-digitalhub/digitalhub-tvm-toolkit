@@ -17,11 +17,11 @@ Runtime Rust**.
 
 | Component      | Details                                                                                |
 | -------------- | -------------------------------------------------------------------------------------- |
-| Apache TVM     | Compiler and runtime libraries in `/opt/tvm/lib`, Python package in `/opt/tvm/python`. |
+| Apache TVM     | Compiler and runtime libraries in `/opt/tvm/lib`, Python package in `/opt/tvm/python`, C headers in `/opt/tvm/include`. |
 | apache-tvm-ffi | Python wheel linked to the `libtvm_ffi.so` of the same TVM build.                      |
 | LLVM           | `libllvm18`, used by TVM to generate the code.                                         |
 | C++ compilers  | Native `g++`, `x86_64-linux-gnu-g++` (AMD64), `aarch64-linux-gnu-g++` (ARM64), `arm-linux-gnueabihf-g++` (ARM32: ARMv7 hard-float). |
-| Importers      | `onnx`, `onnxsim` and `tflite`, including full-integer quantized TFLite models.        |
+| Importers      | `onnx`, `onnx-ir`, `onnxsim` and `tflite`, including full-integer quantized TFLite models.        |
 | Tuning         | What MetaSchedule needs: `xgboost`, `cloudpickle`, `psutil`, `scipy`.                  |
 | HTTP client    | `requests`, for direct CORE calls and signed artifact uploads; no DigitalHub SDK. |
 | Build record   | `/opt/tvm/provenance.json`: versions, commits and SHA-256 of the TVM libraries.        |
@@ -84,7 +84,7 @@ tuning:
 resources: {cpu: "4", mem: 8Gi}
 ```
 
-`profile` chooses the compile node; `target_architecture` chooses the Model's CPU
+`profile` chooses the compile node; `target_architecture` chooses the Model's target
 preset. For conversion and tuning options, see the
 [CORE TVM reference](https://github.com/scc-digitalhub/digitalhub-core/tree/main/runtimes/runtime-tvm).
 Resource needs depend on the model and tuning parallelism; 4 CPUs and 8 GiB are a
@@ -98,7 +98,7 @@ The shared YAML reader loads it; CORE supplies the selected JSON in `TVM_TARGET`
 JSON preserves arrays, numbers and nested options. This image contains no duplicate
 target catalogue.
 
-A Run can instead provide an explicit LLVM `target` object, with the preset omitted
+A Run can instead provide an explicit LLVM or CUDA `target` object, with the preset omitted
 or set to `auto`. Only the YAML catalogue uses a JSON string.
 `optimization.cross_cc` chooses its linker;
 `optimization.cross_cc_options` passes separate arguments, such as
@@ -114,7 +114,93 @@ foreign execution. Otherwise use TVM RPC or apply an existing tuning database.
 Model metadata records the effective `target`, `target_triple`, `toolchain` and,
 when different, `target_requested`. Go/Rust consume that metadata. Adding a CPU
 preset does not supply a missing LLVM backend, toolchain/sysroot or runtime image.
-This integration is Linux CPU only; CUDA requires a separate implementation.
+The default images are Linux CPU builds. An optional CUDA toolkit is
+available as a separate local build, described below.
+
+### Optional CUDA toolkit
+
+The CUDA variant extends the pinned TVM `0.26.0-r2` CPU image. It adds NVIDIA's
+CUDA 13.2.1 `nvcc` and runtime packages, plus the upstream
+`libtvm_runtime_cuda.so` built at TVM commit
+`c7b458e946bc4266915da582457476bdcd9705ae`, with its matching FFI submodule
+`12dbf053b3d9ba4ebd9da3123b1aeca79cf74229`. It uses the existing compiler,
+patched Python tree and cross-compilers from the same TVM revision. The default
+CPU image and publishing workflow remain independent of this variant.
+
+Build on a native AMD64 or ARM64 machine; choose the matching local tag:
+
+```bash
+docker build -f tvm-toolkit/Dockerfile.cuda \
+  --build-arg TVM_CUDA_BUILD_JOBS=2 \
+  -t local/tvm-toolkit:0.26.0-cuda13.2.1-amd64 tvm-toolkit
+```
+
+`TOOLKIT_IMAGE` can override the pinned, multiarchitecture CPU base. Its TVM/FFI
+versions and commits must match the CUDA sidecar. `TVM_CUDA_BUILD_JOBS` limits the
+sidecar build's parallelism. No upstream TVM source changes are applied.
+
+The baseline environment is `TVM_CUDA_COMPILE_MODE=nvcc` and
+`TVM_CUDA_NVCC_NO_FAST_MATH=1`. The default loader path is
+`/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/opt/tvm/lib:/usr/local/cuda/lib64`.
+The image attests `compiled_backends` as
+`["cpu", "cuda"]`; its build record includes the sidecar's SHA-256, source
+commits, effective CUDA CMake cache and installed CUDA package versions. The
+sidecar is checked against the inherited runtime and FFI libraries.
+
+Compilation without a GPU requires an explicit opt-in to NVIDIA's driver stub:
+
+```bash
+docker run --rm --network none \
+  -e LD_LIBRARY_PATH=/opt/tvm/cuda-driver-stubs:/opt/tvm/lib:/usr/local/cuda/lib64 \
+  local/tvm-toolkit:0.26.0-cuda13.2.1-amd64 \
+  python3 /opt/tvm/check_cuda.py --require-no-gpu
+```
+
+The stub is isolated in `/opt/tvm/cuda-driver-stubs/libcuda.so.1` and is absent
+from the default loader path. Keep that path out of GPU execution environments
+and serving images. A real GPU uses the host's NVIDIA driver and container
+runtime. CPU compilation works with the normal loader path and needs no NVIDIA
+driver or device.
+
+`check_cuda.py` compiles CUDA `sm_87` add and matmul kernels, then uses standard
+`export_library` for explicit LLVM AMD64 and ARM64 hosts. It checks each host
+ELF architecture, requires the real CUDA runtime factory and runnable module
+property, and reloads the native-host artifact with `nvcc` removed from `PATH`.
+It rejects TVM's raw CUDA source fallback. These are compilation and serialization
+checks; they do not run a kernel or validate numerical results on a GPU.
+
+The manual-only `tvm-toolkit-cuda.yml` workflow builds and checks both native host
+architectures and uploads build evidence. It has no registry publishing steps.
+CUDA toolkit images have no published release tag yet. Jetson Orin `sm_87` with
+JetPack 7.2 / L4T 39.2 / Ubuntu 24.04 / CUDA 13.2.1 is the intended hardware
+baseline; hardware execution, numerics and performance remain **NOT_RUN**. NVIDIA's
+[JetPack 7.2 release information](https://developer.nvidia.com/embedded/jetpack/downloads/archive-7.2)
+lists that vendor stack. See also the
+[CUDA 13.2.1 image definitions](https://gitlab.com/nvidia/container-images/cuda/-/tree/master/dist/13.2.1/ubuntu2404).
+
+CORE's `jetson_orin_cuda` preset uses standard TVM JSON with a nested host:
+
+```json
+{"kind":"cuda","arch":"sm_87","host":{"kind":"llvm","mtriple":"aarch64-linux-gnu"}}
+```
+
+For an AMD64 host, use `x86_64-linux-gnu` and the actual GPU's `sm_...` architecture.
+Offline `off`/`apply` compilation needs no GPU measurements; active tuning requires
+real GPU limits from `Target.from_device` and local device access or the existing
+RPC runner. CORE's Run/Task `envs` can supply the explicit stub loader path for
+offline compilation. Select `image` separately from the model target and node
+`profile`; CUDA compilation does not select a serving image or GPU node. The
+[CUDA guide](https://scc-digitalhub.github.io/docs/0.16/runtimes/tvm/#cuda-fp32-optional)
+contains complete CORE examples and benchmark semantics.
+
+For the current Orin ARM64 base, install NVIDIA Container Toolkit **1.19.1 or newer**
+on the host and verify `nvidia-ctk --version`. The
+[1.19.1 release](https://github.com/NVIDIA/nvidia-container-toolkit/releases/tag/v1.19.1)
+fixes the compatibility-header failure reproduced with 1.19.0. The hook runs before
+the container entrypoint; image environment changes do not replace the host update.
+
+The builder includes `onnx-ir==1.1.0` for standard ONNX topological sorting in CORE's
+production script, including subgraphs. Original Model files are preserved.
 
 ### Artifact publication
 
@@ -178,7 +264,7 @@ existing Git tags. A new TVM version needs its apache-tvm-ffi mapping in the wor
 For each architecture, on a native runner, the workflow:
 
 1. checks out the toolkit commit that triggered the run and compiles the selected Apache TVM release with LLVM;
-2. copies the libraries and `python/tvm`, and applies the patches in `patches/`;
+2. copies the libraries, C headers and `python/tvm`, and applies the patches in `patches/`;
 3. writes `provenance.json` and builds the image, checking library hashes and imports;
 4. pushes `<tag>-<arch>` and saves its published digest.
 
@@ -238,3 +324,10 @@ Copyright © 2025 DSLab – Fondazione Bruno Kessler and individual contributors
 
 This project is licensed under the Apache License, Version 2.0.
 You may not use this file except in compliance with the License. Ownership of contributions remains with the original authors and is governed by the terms of the Apache 2.0 License, including the requirement to grant a license to the project.
+
+Local CPU builds retain a separate build context, printed by `build-image.sh`;
+`TVM_BUILD_CONTEXT` can select a new directory. Existing repository artifacts are
+preserved. CPU publishing rejects CUDA tags. Publication checks every architecture
+and manifest tag and refuses existing tags or ambiguous registry errors. Select a
+new release tag when publishing rebuilt sources. The CUDA toolkit workflow remains
+validation-only.
